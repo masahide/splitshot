@@ -1,0 +1,25 @@
+{
+    "meta": {
+        "objective": "stub",
+        "workers": 2
+    },
+    "tasks": [
+        {
+            "id": "t1",
+            "title": "A",
+            "summary": "init",
+            "cwd": ".",
+            "prompt": "do A"
+        },
+        {
+            "id": "t2",
+            "title": "B",
+            "summary": "work",
+            "cwd": ".",
+            "prompt": "do B",
+            "dependsOn": [
+                "t1"
+            ]
+        }
+    ]
+}

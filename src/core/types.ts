@@ -14,3 +14,15 @@ export type TaskSpec = {
     artifactHints?: string[];
     profile?: { model?: string; approval?: "suggest" | "auto" | "full-auto" };
 };
+
+export type Assignment = {
+    taskId: string;
+    worktreeDir: string;
+    codexHome: string;
+    profile?: { model?: string; approval?: "suggest" | "auto" | "full-auto" };
+};
+
+export type Assignments = {
+    planId?: string;
+    assignments: Assignment[];
+};
