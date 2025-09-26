@@ -1,98 +1,95 @@
-いい感じに進んでます！いまのコードとセットアップ状況から見た**進捗＆残タスクのチェックリスト**をまとめました（私見を含みます）。
+いい流れ！**（私見）**
+現時点の進捗と残タスクを最新化しました。上から潰せばMVPが閉じます。
 
 ---
 
-# 現在の進捗 ✅
+# 進捗チェックリスト（最新）
 
-* [x] プロジェクト雛形（Node 18+/ESM, pnpm）
-* [x] ビルド：`tsup`（ESM, shebang）／`package.json` の `bin` 配線
-* [x] Lint：ESLint v9 フラット構成（`eslint.config.js`）＋ Prettier
-* [x] 型チェック：`tsconfig.typecheck.json` ＋ `pnpm typecheck`
-* [x] テスト：Vitest（`pnpm test`）、`pretest` でビルド
-* [x] Codex スタブ実装（`tests/fixtures/codex-stub.js`）＆テストで使用
-* [x] `plan` コマンド実装
+## ✅ 完了
 
-  * [x] `--output-schema` / `--json` 検出（`help`/`exec --help`/stderr も考慮）
-  * [x] `--force-schema` で検出スキップ
-  * [x] プロンプト生成（Plan Assist）
-  * [x] Ajv **2020-12** で Schema 検証（`ajv/dist/2020.js`）
-  * [x] 生成物保存：`.codex-parallel/plan-*.json` & `plan.prompt-*.txt`
-* [x] 型・ユーティリティ
+* [x] プロジェクト雛形（Node 18+/ESM, pnpm, tsup）
+* [x] Lint（ESLint v9 フラット構成）/ Prettier
+* [x] Typecheck（`tsconfig.typecheck.json` / `pnpm typecheck`）
+* [x] テスト基盤（Vitest、`pretest -> build`）
+* [x] Codexスタブ（`tests/fixtures/codex-stub.js`）
+* [x] **plan コマンド**
 
-  * [x] `src/core/types.ts`（Plan/TaskSpec）
-  * [x] `src/templates/plan.schema.json`
-  * [x] `src/core/{codex.ts, planner.ts, schema.ts}`
+  * [x] `--output-schema`/`--json` 検出（help強化）
+  * [x] `--force-schema`
+  * [x] Ajv **2020-12** 検証（`ajv/dist/2020.js`）
+  * [x] 生成物保存（`.codex-parallel/plan-*.json`, `plan.prompt-*.txt`）
+  * [x] テスト：スタブでPlan JSONを取得
+* [x] **assign コマンド（最小）**
+
+  * [x] `--plan` 読み込み、`--map` で worktree に割当
+  * [x] `--codex-home-template` 展開
+  * [x] 出力：`.codex-parallel/assignments-*.json`
+  * [x] テスト：割当/保存を検証
+* [x] **scheduler（buildBatches）**
+
+  * [x] 依存DAG→並列バッチ化
+  * [x] 循環検出
+  * [x] テスト：トポロジー/循環
 
 ---
 
-# フェーズ1（CLI版MVP）で**必須**の残タスク 🔜
+## 🔜 残タスク（MVP必須）
 
-## A. `assign` コマンド
+### A. `run` コマンド（コア）
 
-* [ ] `--plan <file>` を読み込み、タスク→作業ディレクトリを割当
-* [ ] 既存割当：`--map t1=../wt1,t2=../wt2`
-* [ ] 自動作成：`--worktree-root ../ --auto-worktree --branch-prefix plan/<id>/`
-* [ ] `--codex-home-template "<worktreeDir>/.codex-home-<taskId>"`
-* [ ] 出力：`.codex-parallel/assignments-*.json`
-* [ ] テスト：map 解析／テンプレ解決／worktree 作成（スタブ）／出力整合
+* [ ] `--assign <file>` 読み込み
+* [ ] **スケジューリング**：`buildBatches` を使って層ごと実行
+* [ ] **max並列**：`--max-parallel` セマフォ制御
+* [ ] **プロセス起動**：`spawn("codex", …)`（`cwd=worktreeDir`, `env.CODEX_HOME`）
+* [ ] `--codex-args "<…>"` 透過
+* [ ] **CODEX_HOME競合検知**：同一パスの同時起動禁止／`--auto-isolate` でサフィックス付与
+* [ ] **ログ収集**：
 
-## B. `run` コマンド（並列・依存制御）
+  * [ ] `stdout`/`stderr` を行単位で `events.ndjson` に書く
+  * [ ] `$CODEX_HOME/sessions/**/rollout-*.jsonl` を**後出しにも追従**して取り込み
+  * [ ] バックプレッシャ対応（バッファ/flush）
+* [ ] **状態管理**：`start/exit` イベント、exit code 記録
+* [ ] **失敗伝播**：失敗したタスクの子は `blocked/skipped`
+* [ ] **終了コード**：いずれか失敗で非0
 
-* [ ] **Scheduler**：`dependsOn` を解決（DAG）／`--max-parallel` 上限
-* [ ] **Runner**：`spawn("codex", …)`（`cwd=worktreeDir`, `env.CODEX_HOME` 設定）
-* [ ] **競合ガード**：同一 `CODEX_HOME` の重複利用検知／`--auto-isolate`
-* [ ] **停止処理**：Unix=PGIDに `SIGTERM→SIGKILL`、Win=`taskkill /T /F`
-* [ ] **Tailer**：
+**テスト（TDD）**
 
-  * [ ] `stdout`/`stderr` を行単位で取得
-  * [ ] `$CODEX_HOME/sessions/**/rollout-*.jsonl` を**新規生成にも追従**
-  * [ ] すべて `events.ndjson`（`state|stdout|stderr|jsonl`）へ追記（Backpressure安全）
-* [ ] **Exit 集約**：失敗時の後続タスクを `blocked/skipped` に
-* [ ] テスト：2〜3タスクで直列＋並列が混在する E2E（スタブ Runner で擬似出力）
+* [ ] ランナースタブで擬似 `stdout/stderr/jsonl` を吐き、`events.ndjson` を検証
+* [ ] `--max-parallel` 制約の順序性
+* [ ] 失敗→依存タスク `blocked` になること
+* [ ] `--auto-isolate` の動作
+* [ ] 大量ログ（擬似10万行）で欠落なし
 
-## C. `tail` コマンド（ミニマム）
+### B. `tail` コマンド（ミニマム）
 
-* [ ] `events.ndjson` をフォローし、`--run <id|all>`／`--type` でフィルタ表示
+* [ ] `events.ndjson` のフォロー（`--run <id|all>` / `--type` フィルタ）
 * [ ] 色付け（任意）
+* [ ] テスト：フィルタと追尾が効く
 
-## D. 受け入れ基準（DoD）検証
+### C. `assign` の拡張（仕様にあった分）
 
-* [ ] 「N並列」「依存順序」「CODEX_HOME競合検知/回避」「NDJSON出力」「非0終了」などのE2E
-
----
-
-# 品質・DX まわり 🧪
-
-* [ ] ユニットテスト追加：`detectCodexFeatures`／`schema` エラー系／`readMaybeFile`／`buildPlannerPrompt`
-* [ ] 大量ログ Fixture（10万行相当）で Tailer の耐性を検証
-* [ ] カバレッジ閾値設定 & CI バッジ（任意）
-* [ ] GitHub Actions：Linux/Windows・Node 18/20/22 マトリクスで `pnpm check`
+* [ ] **自動 worktree 作成**：`--worktree-root` / `--auto-worktree` / `--branch-prefix`
+* [ ] `git` 呼び出しヘルパ（`git.ts`）＋スタブテスト
 
 ---
 
-# ドキュメント／配布 📦
+## 🧪 品質/DX（MVP同梱したい）
 
-* [ ] README（概要・Quickstart・`plan/assign/run` 例・スタブの使い方）
-* [ ] ライセンス（例：MIT）
-* [ ] 変更履歴（CHANGELOG）と `engines` 指定
-* [ ] `example/`（`objective.md`,`plan.json`,`assignments.json`）
-* [ ] エラーメッセージ整備（原因と対処のヒント）
-
----
-
-# Backlog（MVP外・あとで）
-
-* [ ] `history`（軽量メタ or SQLite 索引）
-* [ ] `diff`（編集候補ファイルの HEAD 対比）
-* [ ] 擬似 `resume`／コスト概算
-* [ ] 設定ファイル（`.splitshotrc`）／プロフィール機能
+* [ ] `detectCodexFeatures` の単体テスト（help出力スタブ）
+* [ ] `schema.ts` エラー系テスト（必須項目欠落）
+* [ ] `planner`/`readMaybeFile` の単体テスト
+* [ ] `pnpm check` をCI（GitHub Actions）に導入：Linux/Windows × Node 18/20/22
+* [ ] README：Quickstart（スタブ/実機Codexの両方）、コマンド例
+* [ ] ライセンス、`engines`、`example/`（`objective.md` など）
 
 ---
 
-## 直近の「次の3手」（迷ったらコレ）
+## 🎯 直近の“次の3手”
 
-1. **`assign` の最小実装**：`--plan` と `--map` だけで `.codex-parallel/assignments-*.json` を出す
-2. **Scheduler**（`dependsOn`＋`--max-parallel`）をテスト先行で作る
-3. **Runner+Tailer スタブ**で `events.ndjson` を吐くところまで通す（実 Codex 連携は後で差し替え）
+1. **`run` のRED**：最小E2E（2層＋max-parallel=1）で`events.ndjson`生成を期待 → 失敗させる
+2. **Runner/TailerのスタブGREEN**：外部`codex`をまだ呼ばず、擬似プロセスで`events.ndjson`を書かせる
+3. **実プロセス差し替え**：`spawn`＋CODEX_HOME設定→`rollout-*.jsonl`取り込み→失敗伝播
 
-この順で進めれば、MVPのコア（計画→割当→並列実行→ログ）が最短で通ります。必要なら `assign` の雛形コードもここで出します！
+---
+
+何か順序を微調整したければ言って。`run` の RED 用テスト雛形もすぐ出せます（私見）。
