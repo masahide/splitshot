@@ -8,6 +8,8 @@ import { ensureDir, findLatestPlanDir, writeFileUtf8 } from "../core/paths.js";
 import { formatCliError } from "../core/errors.js";
 import { JsonlFollower } from "../core/jsonlFollower.js";
 import { createEventsWriter } from "../core/eventsWriter.js";
+import { inheritCodexAuthFiles } from "../core/codexAuth.js";
+import { detectCodexFeatures } from "../core/codex.js";
 
 type Manifest = {
     version: 1;
@@ -58,6 +60,10 @@ export function cmdRun() {
             // 3) 並列数
             const maxParallel = opts.maxParallel > 0 ? opts.maxParallel : manifest.workers.length;
 
+            // Codex の --json 対応を検出（あるときだけ付ける）
+            const feats = await detectCodexFeatures(opts.codexBin);
+            const supportsJson = feats.hasJson;
+
             // 4) CODEX_HOME 準備（衝突検知 & auto-isolate）
             const baseHome = path.join(planDir, ".homes");
             ensureDir(baseHome);
@@ -86,6 +92,7 @@ export function cmdRun() {
                 seen.set(home, w.id);
                 homeMap[w.id] = home;
                 ensureDir(home);
+                inheritCodexAuthFiles(home);
             }
 
             // 5) run.meta.json
@@ -117,8 +124,8 @@ export function cmdRun() {
                 );
                 follower.start();
 
-                // codex exec --json -- "<prompt>"
-                const args = ["exec", "--json", "--", prompt];
+                // codex exec [--json?] -- "<prompt>"
+                const args = ["exec", ...(supportsJson ? ["--json"] : []), "--", prompt];
                 const child = spawn(
                     opts.codexBin.endsWith(".js") ? process.execPath : opts.codexBin,
                     opts.codexBin.endsWith(".js") ? [opts.codexBin, ...args] : args,

@@ -2,11 +2,14 @@ import { Command } from "commander";
 import fs from "fs";
 import path from "path";
 import { detectCodexFeatures, execCodexWithSchema } from "../core/codex";
+import { inheritCodexAuthFiles } from "../core/codexAuth.js";
 import { buildPlannerPrompt } from "../core/planner";
 import type { Plan } from "../core/types";
 import { buildBatches } from "../core/scheduler.js";
 import { ensureDir, createPlanDir, writeFileUtf8 } from "../core/paths.js";
 import { writePlanJsonSchemaFile, parsePlanFromText } from "../schemas/plan.js";
+import { detectRepoInfo } from "../core/repo.js";
+
 
 async function readMaybeFile(v?: string): Promise<string | undefined> {
     if (!v) return;
@@ -22,6 +25,10 @@ export function cmdPlan() {
         .option("--debug", "Enable debug: print/save Codex input and output", false)
         .option("--objective <fileOrText>", "Objective file path or raw text")
         .option("--workers <n>", "Workers hint", (v) => parseInt(v, 10), 3)
+        // repo context（自動検出の上書き用・任意）
+        .option("--repo-root <dir>", "Repository root override (default: auto-detect)")
+        .option("--repo-branch <name>", "Repository branch override (default: auto-detect)")
+        .option("--repo-head <sha>", "Repository head SHA override (default: auto-detect)")
         .option("--out <dir>", "Plan base output directory (default: ./.splitshot)")
         .option("--avoid <globs>", "Comma separated globs to avoid (e.g. infra/**,docs/**)")
         .option("--must <globs>", "Comma separated globs to prioritize")
@@ -42,6 +49,14 @@ export function cmdPlan() {
                 throw new Error("objective is required (text or file path)");
             }
 
+            // 1.5) Detect repo info (best-effort)
+            const autoRepo = await detectRepoInfo(process.cwd());
+            const repo = {
+                root: opts.repoRoot ?? autoRepo.root,
+                branch: opts.repoBranch ?? autoRepo.branch,
+                headSha: opts.repoHead ?? autoRepo.headSha,
+            };
+
             // 2) Detect Codex features unless forced
             const feats = await detectCodexFeatures(opts.codexBin);
             if (!opts.forceSchema && !feats.hasOutputSchema) {
@@ -57,18 +72,22 @@ export function cmdPlan() {
             writePlanJsonSchemaFile(schemaPath);
 
             // 4) Build prompt for the planner
-            const prompt = buildPlannerPrompt({ objective, workers: opts.workers });
+            const prompt = buildPlannerPrompt({ objective, workers: opts.workers, repo });
 
             // 5) Run Codex with structured outputs
             if (opts.debug) {
                 // print prompt early for visibility
                 console.error("[debug] planner prompt:\n" + prompt);
             }
+            // planner 用 CODEX_HOME を決定し、認証ファイルを継承
+            const plannerHome = opts.plannerHome ?? path.resolve(".codex-home-planner");
+            inheritCodexAuthFiles(plannerHome);
+
             const stdout = await execCodexWithSchema({
                 bin: opts.codexBin,
                 schemaPath,
                 prompt,
-                plannerHome: opts.plannerHome ?? path.resolve(".codex-home-planner"),
+                plannerHome,
                 timeoutMs: opts.timeout,
             });
             if (opts.debug) {

@@ -23,8 +23,6 @@ export async function execCodexWithSchema(a: ExecPlanArgs): Promise<string> {
     const args = [
         "exec",
         "--output-schema", a.schemaPath,
-        "--quiet",
-        "--json",
         ...(a.extraArgs ?? []),
         "--",
         a.prompt
