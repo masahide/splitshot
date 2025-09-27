@@ -145,3 +145,4 @@ node_modules
 
 .codex-parallel/
 .splitshot/
+llms.txt
