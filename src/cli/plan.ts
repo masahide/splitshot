@@ -2,11 +2,11 @@ import { Command } from "commander";
 import fs from "fs";
 import path from "path";
 import { detectCodexFeatures, execCodexWithSchema } from "../core/codex";
-import { loadSchema, assertValid } from "../core/schema";
 import { buildPlannerPrompt } from "../core/planner";
 import type { Plan } from "../core/types";
 import { buildBatches } from "../core/scheduler.js";
 import { ensureDir, createPlanDir, writeFileUtf8 } from "../core/paths.js";
+import { writePlanJsonSchemaFile, parsePlanFromText } from "../schemas/plan.js";
 
 async function readMaybeFile(v?: string): Promise<string | undefined> {
     if (!v) return;
@@ -49,12 +49,11 @@ export function cmdPlan() {
                 );
             }
 
-            // 3) Resolve schema & validator
-            const schemaPath = path.resolve("src/templates/plan.schema.json");
-            if (!fs.existsSync(schemaPath)) {
-                throw new Error(`Schema file not found: ${schemaPath}`);
-            }
-            const validate = loadSchema(schemaPath);
+            // 3) Zod → JSON Schema を一時ファイルに生成
+            const schemaDir = path.resolve(".splitshot/_schemas");
+            ensureDir(schemaDir);
+            const schemaPath = path.join(schemaDir, "plan.schema.zod.json");
+            writePlanJsonSchemaFile(schemaPath);
 
             // 4) Build prompt for the planner
             const prompt = buildPlannerPrompt({
@@ -75,15 +74,8 @@ export function cmdPlan() {
                 timeoutMs: opts.timeout,
             });
 
-            // 6) Parse & validate JSON
-            let json: unknown;
-            try {
-                json = JSON.parse(stdout);
-            } catch {
-                throw new Error(`Codex did not return valid JSON. Raw output:\n${stdout}`);
-            }
-            assertValid<Plan>(validate, json);
-            const plan = json as Plan;
+            // 6) Parse & validate JSON (Zod)
+            const plan = parsePlanFromText(stdout) as Plan;
 
             // === 7) Create plan-dir structure ===
             const planBase = path.resolve(opts.out ?? ".splitshot");

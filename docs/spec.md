@@ -70,11 +70,7 @@ splitshot plan \
   --objective <file|text> \
   --workers <N> \
   [--codex-bin <path>] \
-  [--timeout <ms>] \
   [--out <dir>] \
-  [--avoid <globs>] [--must <globs>] \
-  [--approval suggest|auto|full-auto] \
-  [--model <name>] \
   [--planner-home <dir>]
 ```
 
@@ -85,10 +81,8 @@ splitshot plan \
 * **主な任意**
 
   * `--codex-bin`: Codex バイナリ or JS（既定: `codex`）
-  * `--timeout`: Codex 実行タイムアウト（既定: 120000ms）
   * `--out`: 出力先ディレクトリ（既定: `./.splitshot/plan-<ts>/`）
-  * `--avoid`, `--must`: パスのヒント（カンマ区切り）
-  * `--approval`, `--model`, `--planner-home`: プランナーのプロファイル指定
+  * `--planner-home`: プランナーのプロファイル指定
 
 **処理内容**
 

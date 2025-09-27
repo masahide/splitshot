@@ -77,11 +77,7 @@ splitshot plan \
   --objective <file|text> \
   --workers <N> \
   [--codex-bin <path>] \
-  [--timeout <ms>] \
   [--out <dir>] \
-  [--avoid <globs>] [--must <globs>] \
-  [--approval suggest|auto|full-auto] \
-  [--model <name>] \
   [--planner-home <dir>]
 ```
 
@@ -93,10 +89,7 @@ splitshot plan \
 **Common options**
 
 * `--codex-bin` — Codex binary or JS script (`codex` by default)
-* `--timeout` — Codex execution timeout (default: `120000` ms)
 * `--out` — explicit output dir (defaults to `./.splitshot/plan-<timestamp>/`)
-* `--avoid`, `--must` — comma‑separated path hints for the planner
-* `--approval`, `--model` — planner profile knobs
 
 **Behavior**
 
