@@ -1,229 +1,288 @@
-# SplitShot — CLI MVP 仕様書（フェーズ1・更新版）
+# SplitShot 仕様書（2モード版：プラン / 並列実行）
 
-## プロジェクト概要
+## 概要
 
-**SplitShot** は、Codex を**並列実行**するための CLI です。
-特徴は以下（MVP時点）：
+SplitShot は、Codex を用いてソフトウェア開発タスクを **計画（プラン）**し、生成された **チェックリスト（Markdown）** を元に **並列で実行**する CLI ツールです。
+ユーザー操作は原則 **2コマンド**のみで完了します。
 
-* **Plan Assist**：Codex の **`--output-schema` 構造化出力**で “並列タスク計画” を生成
-* **安全な並列起動**：タスクごとに `CODEX_HOME` を **worktree 単位で自動分離**（競合ガード）
-* **再現性**：Plan JSON/プロンプト、各 Run のイベントを **機械可読（JSON/NDJSON）** で保存
-* **将来拡張**：フェーズ2で **SSE WebUI** を載せても、そのまま使えるデータ形（NDJSON）
-
-> ねらい：**「計画 → 並列実行 → ログ」** の最小ループを CLI 1本で回し、後から UI を被せても非互換が出ない土台を作る（私見）。
+1. **プランフェーズ**: 目的と並列数を入力すると、並列数ぶんの **TODO チェックリスト（Markdown）** と **マニフェスト** が生成されます。
+2. **並列実行フェーズ**: 生成されたチェックリストを単位に Codex を **並列実行**し、状態・ログを収集します（`codex exec --json`）。
 
 ---
 
-## スコープ（MVPでやる/やらない）
+## ゴール / 非ゴール
 
-**やる**
+* **ゴール**
 
-* `plan`：構造化出力で **並列タスク計画**を生成（Schema 検証つき）
-* `assign`：タスク→worktree/CODEX_HOME の割当（自動 worktree 作成は任意）
-* `run`：割当にもとづく **並列実行**（依存関係/同時上限/競合ガード）
-* `tail`（任意）：コンソールでログ追尾
-* 出力の永続化：`.codex-parallel/` に JSON/NDJSON を保存
+  * 初見でも迷わない、最小オプションの 2 ステップ運用
+  * チェックリスト（人間可読）を中心とした成果物で状況把握が容易
+  * 実行の可観測性（状態イベント、標準出力/エラー、JSONL 取り込み）
 
-**やらない**
+* **非ゴール**
 
-* WebUI（SSE/REST）はフェーズ2
-* PR自動化/外部SaaS連携/厳密コスト計測
+  * きめ細かい DAG リソース管理（初期版はワーカー内順序保証に限定）
+  * Git worktree 作成の実行（コマンド生成は今後の拡張範囲）
 
 ---
 
-## アーキテクチャ（MVP）
+## 用語
 
-* **言語/配布**：TypeScript（ESM）＋ `tsup` バンドル、npm CLI
-
-  * Node 18+（推奨 20+/22）
-  * `bin`: `splitshot` → `dist/cli/index.js`
-* **外部呼び出し**：Codex CLI（`codex exec`）
-* **ログ/成果物**：ローカル FS（`./.codex-parallel/`）
+* **プランディレクトリ（plan-dir）**: 1 回のプラン生成で作られるディレクトリ。チェックリストやマニフェスト、実行ログが格納されます。
+  既定パス: `./.splitshot/plan-<timestamp>/`
+* **チェックリスト**: 各ワーカーが実施する TODO をまとめた Markdown。`checklists/worker-01.md` など。
+* **マニフェスト**: 実行時に参照する JSON。チェックリスト一覧やメタ情報を含みます。
+* **ラン**: 1 回の並列実行。`<plan-dir>/.runs/<timestamp>/` にイベントログを保存。
 
 ---
 
-## コマンド仕様
+## CLI
 
-### 1) `splitshot plan`（構造化計画の生成）
+### 1) プランフェーズ
 
-**目的**：Codex `--output-schema` を使い、**Plan JSON** を得る（draft 2020-12 準拠）。
-
-* オプション
-
-  * `--objective <file|text>`（必須）
-  * `--workers <n>`（既定 3）
-  * `--avoid <globs>` / `--must <globs>`
-  * `--approval <suggest|auto|full-auto>`（既定 suggest）
-  * `--model <name>`
-  * `--planner-home <dir>`（既定 `./.codex-home-planner`）
-  * `--codex-bin <path>`（既定 `codex`）
-  * `--timeout <ms>`（既定 120000）
-  * `--force-schema`（検出をスキップし **強制**で `--output-schema` を使う）
-
-* **機能検出**（更新点）
-  `codex exec --help` / `help exec` / `--help` の **stdout+stderr** を総合して
-  `--output-schema` / `--json` を検出。`--force-schema` 指定時は検出スキップ。
-
-* **Schema/検証**（更新点）
-
-  * `src/templates/plan.schema.json`（**JSON Schema draft 2020-12**）
-  * 検証は **Ajv 2020**（`ajv/dist/2020.js`）を使用
-
-* **出力**
-
-  * STDOUT：Plan JSON（型 `Plan`）
-  * 保存：`.codex-parallel/plan-<ts>.json`、`plan.prompt-<ts>.txt`
-
-* **失敗時**
-
-  * JSON 解析失敗／Schema 不一致／Codex 実行失敗は **非0** 終了。
-  * エラーメッセージに **生出力**の一部を含める。
-
-**例**
-
-```bash
+```
 splitshot plan \
-  --objective ./objective.md \
-  --workers 3 \
-  --approval auto \
-  --model gpt-5-codex \
-  --force-schema
+  --objective <file|text> \
+  --workers <N> \
+  [--out <dir>] \
+  [--codex-bin <path>] \
+  [--timeout <ms>]
 ```
 
----
+* **必須**
 
-### 2) `splitshot assign`
+  * `--objective`: 目的文（ファイルパスまたはテキスト）。
+  * `--workers`: 並列数（= 生成するチェックリスト数）。
+* **任意**
 
-**目的**：Plan を具体の worktree/CODEX_HOME に割当。
+  * `--out`: 出力先ディレクトリ（既定: `./.splitshot/plan-<timestamp>/`）
+  * `--codex-bin`: Codex バイナリ（既定: `codex`）
+  * `--timeout`: Codex 実行タイムアウト（既定: 120000ms）
 
-* 代表的オプション
+**処理内容**
 
-  * `--plan <file>`
-  * 既存割当：`--map t1=../wt1,t2=../wt2`
-  * 自動作成：`--worktree-root ../ --auto-worktree --branch-prefix plan/<id>/`
-  * `--codex-home-template "<worktreeDir>/.codex-home-<taskId>"`
+* Codex の `--output-schema` / `--json` 対応を検出（スキップ可）。
+* `src/templates/plan.schema.json`（draft 2020-12）に合致する **Plan JSON** を取得・検証。
+* Plan のタスクをトポロジー順に **N 本のワーカーストリームへ分配**（ラウンドロビン）。
+* 各ストリームごとに **チェックリスト（Markdown）** を生成。
+* **マニフェスト（JSON）** を生成。
 
-* 出力
-  `.codex-parallel/assignments-<ts>.json`
+**出力（plan-dir 配下）**
 
----
+```
+.splitshot/plan-<ts>/
+  plan.json                 # Codex から取得・検証済みの計画（内部形式）
+  manifest.json             # run が参照するエントリポイント
+  plan.prompt.txt           # Codex へ渡したプロンプトのコピー
+  checklists/
+    worker-01.md
+    worker-02.md
+    ...
+```
 
-### 3) `splitshot run`
+**チェックリストの構成（例）**
 
-**目的**：Assignments に沿って Codex を**並列起動**。依存関係/同時上限/競合ガードを適用。
+```md
+# Worker 01 — TODO Checklist
 
-* 代表的オプション
+## Context
+<objective の要約または抜粋>
 
-  * `--assign <file>`
-  * `--max-parallel <n>`
-  * `--auto-isolate`（**同一 `CODEX_HOME` 競合を自動サフィックス付与で回避**）
-  * `--codex-args "<...>"`（Codex 追加フラグ）
+## Tasks
+- [ ] t1: Bootstrap runner
+  - Summary: ...
+  - Acceptance: ...
+- [ ] t3: Tail command
+  - Summary: ...
+  - Acceptance: ...
 
-* 出力（Run ごと）
+## Notes
+- 出力は JSONL も含めて行単位でわかるように
+- 重要メトリクスは最後に箇条書きで報告
+```
 
-  * `./.codex-parallel/runs/<runId>/run.meta.json`
-  * `./.codex-parallel/runs/<runId>/events.ndjson`
-    （`state|stdout|stderr|jsonl` を 1 行 1 JSON で追記）
-
-* 挙動
-
-  * 依存関係：`dependsOn` を尊重（未完了なら待機）
-  * 停止処理：Unix=PGIDへ `SIGTERM→SIGKILL`／Windows=`taskkill /T /F`
-
----
-
-### 4) `splitshot tail`（任意）
-
-* `--run <id|all>`、`--type stdout,stderr,jsonl,state`
-* `events.ndjson` を流す簡易ビューア（カラー出力任意）
-
----
-
-## データモデル／ファイル形式
-
-* **Plan JSON**（`Plan`/`TaskSpec`）
-  `meta.objective/workers`、`tasks[].{id,title,summary,cwd,prompt,dependsOn,profile...}`
-
-* **NDJSON（events）** 例
+**マニフェストの構成（例）**
 
 ```json
-{"t":1737940000123,"type":"state","runId":"t1","data":{"phase":"start","pid":12345}}
-{"t":1737940000456,"type":"stdout","runId":"t1","data":{"line":"..."}}
-{"t":1737940000789,"type":"jsonl","runId":"t1","data":{"line":"{ \"tool\":\"write_file\" }"}}
-{"t":1737940100000,"type":"state","runId":"t1","data":{"phase":"exit","code":0}}
+{
+  "version": 1,
+  "objective": "<string>",
+  "createdAt": "2025-09-27T11:22:33Z",
+  "workers": [
+    { "id": "w01", "checklist": "checklists/worker-01.md" },
+    { "id": "w02", "checklist": "checklists/worker-02.md" }
+  ]
+}
 ```
 
 ---
 
-## ディレクトリ構成（推奨）
+### 2) 並列実行フェーズ
 
 ```
-/src
-  /cli        (plan, assign, run, tail)
-  /core       (codex, planner, runner, scheduler, tailer, schema, types...)
-  /templates  (plan.schema.json)
-  /fixtures   (テスト用スタブ等)
-/tests
-  plan.test.ts
-  /fixtures/codex-stub.js
+splitshot run \
+  [--plan-dir <dir>] \
+  [--codex-bin <path>] \
+  [--max-parallel <N>] \
+  [--auto-isolate]
 ```
+
+* **既定**
+
+  * `--plan-dir`: 最新の `./.splitshot/plan-*/` を自動選択
+  * `--codex-bin`: `codex`
+  * `--max-parallel`: チェックリスト数（`manifest.workers.length`）
+  * `--auto-isolate`: 有効（同一 `CODEX_HOME` 検知時に `-iso-<uniq>` 付与）
+
+**処理内容**
+
+* `manifest.json` を読み、`workers[]` を対象に並列実行。
+* 各ワーカーについて:
+
+  * `checklists/worker-XX.md` をプロンプトに整形し、
+    `codex exec --json -- "<prompt>"` を起動。
+  * 実行環境:
+
+    * `cwd = <plan-dir>`
+    * `env.CODEX_HOME = <plan-dir>/.homes/<workerId>`（競合時は `-iso-<uniq>` 付与）
+    * 追加環境変数:
+
+      * `SPLITSHOT_RUN_ID=<workerId>`
+      * `SPLITSHOT_CHECKLIST_FILE=<abs path to md>`
+  * ログ収集:
+
+    * `stdout` / `stderr` を行単位で取り込み
+    * `$CODEX_HOME/sessions/**/rollout-*.jsonl` を 200ms 間隔で追従（後から出現するファイルも取り込み）
+  * 状態管理:
+
+    * `state:start` / `state:exit(code)` を記録
+    * 同一ワーカー内で致命的失敗が発生した場合、後続項目を `state:blocked` で記録（将来の詳細化対象）
+
+**出力（plan-dir 配下）**
+
+```
+.splitshot/plan-<ts>/
+  .runs/
+    latest.json              # { "runDir": "<abs path>" }
+    <run-ts>/
+      events.ndjson
+      run.meta.json          # { workers, maxParallel, codexHomes }
+  .homes/
+    w01/ ... (CODEX_HOME)
+    w02/ ...
+```
+
+**イベント（NDJSON）形式**
+
+```json
+{"t": 1738020000000, "type": "state",  "runId": "w01", "data": {"phase": "start"}}
+{"t": 1738020000100, "type": "stdout", "runId": "w01", "data": {"line": "..."}} 
+{"t": 1738020000200, "type": "jsonl",  "runId": "w01", "data": {"line": "{\"step\":1}"}} 
+{"t": 1738020000300, "type": "state",  "runId": "w01", "data": {"phase": "exit", "code": 0}}
+{"t": 1738020000400, "type": "state",  "runId": "w02", "data": {"phase": "blocked", "reason": "dependency_failed"}}
+```
+
+**終了コード**
+
+* すべて成功で `0`
+* いずれか失敗で `1`
 
 ---
 
-## 開発・テスト（更新点反映）
+### 3) ログ閲覧
 
-* **ESM 方針**：`"type": "module"`、`tsup` 出力は **ESM**、Node 実行は `process.execPath` 経由
-* **テスト**：**スタブ Codex 固定**
+```
+splitshot tail \
+  [--plan-dir <dir>] \
+  [--run <id|all>] \
+  [--type stdout,stderr,jsonl,state] \
+  [--duration <ms>]
+```
 
-  * `tests/fixtures/codex-stub.js` を `--codex-bin` に指定
-  * 実機 Codex は **手動検証**のみ（CI では使わない、私見）
-* **型チェック**：`pnpm typecheck`
+* 既定で `--plan-dir` の latest run を参照
+* `--duration` 指定時は追尾、それ以外は現状出力のみ
 
-  * `tsconfig.typecheck.json`（`noEmit`, `rootDir: "."`, `include: ["src","tests"]`）
-* **Lint**：ESLint v9 フラット config（`eslint.config.js`）
+---
 
-  * `pnpm lint`（Prettier 競合 OFF）
-* **スクリプト**（例）
+## 既定値と挙動の要点
 
-  ```json
-  {
-    "scripts": {
-      "build": "tsup",
-      "pretest": "pnpm build",
-      "test": "vitest run",
-      "typecheck": "tsc -p tsconfig.typecheck.json --noEmit",
-      "lint": "eslint .",
-      "check": "pnpm lint && pnpm typecheck && pnpm test"
-    }
+* **2コマンド運用**
+
+  * `splitshot plan --objective <...> --workers <N>`
+  * `splitshot run`
+    これだけで、直近の plan-dir を用いて並列実行まで通ります。
+* **成果物の一元化**
+  すべて **plan-dir** に集約。中間成果物（チェックリスト、マニフェスト）と、実行結果（events / meta）が一箇所に揃います。
+* **Codex 実行**
+
+  * 既定は `codex exec --json` を直接起動。
+  * `.js` ランナーを渡す場合は `--codex-bin <path/to/script.js>` を指定すると Node 経由で起動します。
+* **CODEX_HOME 衝突**
+
+  * 同一パスが同時使用される場合は起動前に検知。
+  * `--auto-isolate` 有効時は自動で `-iso-<uniq>` をサフィックス付与。
+
+---
+
+## データ仕様（抜粋）
+
+* **Plan JSON**: `src/templates/plan.schema.json`（draft 2020-12）
+* **Manifest JSON**
+
+  ```ts
+  type Manifest = {
+    version: 1;
+    objective: string;
+    createdAt: string; // ISO8601
+    workers: { id: string; checklist: string }[];
   }
+  ```
+* **イベント NDJSON**
+
+  ```ts
+  type StateEvent =
+    | { type:"state"; runId:string; t:number; data:{ phase:"start" } }
+    | { type:"state"; runId:string; t:number; data:{ phase:"exit"; code:number } }
+    | { type:"state"; runId:string; t:number; data:{ phase:"blocked"; reason:string; deps?:string[] } };
+  type LineEvent =
+    | { type:"stdout"|"stderr"|"jsonl"; runId:string; t:number; data:{ line:string } };
   ```
 
 ---
 
-## 受け入れ基準（DoD）
+## 互換と移行
 
-* `plan` が **`--output-schema` 前提**で Plan JSON を返し、**Ajv 2020** 検証に通る
-* `assign` で Assignments JSON を生成できる（手動/自動 worktree）
-* `run` が **N 並列**＋**dependsOn 順序**で起動し、`events.ndjson` を記録
-* `CODEX_HOME` 競合を **起動前に検知**、`--auto-isolate` で解決可能
-* 異常時は **非0** 終了＋適切なエラーメッセージを出す
+* 旧 **assign** コマンドは非推奨。2モード化により、チェックリストとマニフェストを中心に運用します。
+  互換が必要な場合は、plan-dir を出力先として活用し、将来的に完全移行します。
 
 ---
 
-## 将来（フェーズ2）接続
+## エラーハンドリング（要点）
 
-* CLI の `core` をライブラリ化（`@splitshot/core`）
-* HTTP（REST）+ **SSE `/stream`** を追加し、`events.ndjson` を配信
-* WebUI は SSE を購読し、Dashboard/History/Run Detail/Plan Assist を提供
-
----
-
-## 既知のリスクと対応（私見）
-
-* **Codex 側の出力ブレ**：`--output-schema` + Ajv 検証で弾く／`--force-schema` をデバッグ用に
-* **Windows/Unix 差**：停止処理は OS 毎に分岐実装
-* **巨大ログ**：tailer は行バッファ・逐次書き出しで backpressure 回避
+* `codex` 非検出 / 非対応: 明確なメッセージ（`--force-schema` 等は将来オプション）
+* スキーマ不整合: Ajv で詳細メッセージ
+* CODEX_HOME 競合: エラー / `--auto-isolate` の案内
+* ファイル欠落（manifest / checklists）: 欠落ファイル名と復旧手順を提示
 
 ---
 
-必要なら、この仕様を **README.md の冒頭ピッチ＋詳細**に分解した版も作れます。次は `assign` の RED を置いて実装を刻んでいきましょう。
+## 開発/テスト（TDD 指針）
+
+* **plan.checklists.test**: チェックリストと manifest の生成を検証
+* **run.manifest.e2e.test**: manifest 駆動で N 並列実行し、`events.ndjson` を検証
+* **tail.latest.test**: デフォルトで最新ランを追えること
+* パフォーマンス: 大量ログ耐性（今後拡張）
+
+---
+
+## 例（最短）
+
+```bash
+# 1) プラン
+splitshot plan --objective README.md --workers 3
+
+# 2) 実行（最新の plan-dir を自動検出）
+splitshot run
+
+# ログ（stdout と jsonl のみ表示）
+splitshot tail --type stdout,jsonl
+```

@@ -1,0 +1,15 @@
+{
+  "meta": {
+    "objective": "stub",
+    "workers": 2
+  },
+  "tasks": [
+    {
+      "id": "t1",
+      "title": "bootstrap",
+      "summary": "init",
+      "cwd": ".",
+      "prompt": "do something"
+    }
+  ]
+}

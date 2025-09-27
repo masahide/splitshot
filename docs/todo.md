@@ -1,795 +1,202 @@
-いい流れ！**（私見）**
-現時点の進捗と残タスクを最新化しました。上から潰せばMVPが閉じます。
+以下は　**2モード仕様**に沿って、現行コードからの移行を前提にした **TDD用TODOチェックリスト**です。
+各項目は **RED（テスト追加）→ GREEN（実装）→ REFACTOR（整理）** の順で進められる粒度に分けています。
+※後方互換は不要とします（旧 `assign` は廃止でOK）。
 
 ---
 
-# 進捗チェックリスト（最新）
+# SplitShot 2モード化：TDD TODOチェックリスト
 
-## ✅ 完了
+## 0. 下準備（共通ユーティリティ）
 
-* [x] プロジェクト雛形（Node 18+/ESM, pnpm, tsup）
-* [x] Lint（ESLint v9 フラット構成）/ Prettier
-* [x] Typecheck（`tsconfig.typecheck.json` / `pnpm typecheck`）
-* [x] テスト基盤（Vitest、`pretest -> build`）
-* [x] Codexスタブ（`tests/fixtures/codex-stub.js`）
-* [x] **plan コマンド**
+* [ ] **RED**: `tests/helpers/tmp.ts` を用意し、一時ディレクトリ作成/削除のヘルパを追加
 
-  * [x] `--output-schema`/`--json` 検出（help強化）
-  * [x] `--force-schema`
-  * [x] Ajv **2020-12** 検証（`ajv/dist/2020.js`）
-  * [x] 生成物保存（`.codex-parallel/plan-*.json`, `plan.prompt-*.txt`）
-  * [x] テスト：スタブでPlan JSONを取得
-* [x] **assign コマンド（最小）**
-
-  * [x] `--plan` 読み込み、`--map` で worktree に割当
-  * [x] `--codex-home-template` 展開
-  * [x] 出力：`.codex-parallel/assignments-*.json`
-  * [x] テスト：割当/保存を検証
-* [x] **scheduler（buildBatches）**
-
-  * [x] 依存DAG→並列バッチ化
-  * [x] 循環検出
-  * [x] テスト：トポロジー/循環
+  * 期待: `mkTmpWork("splitshot-")` が空ディレクトリを返す
+* [ ] **GREEN**: 実装（`tests/helpers/tmp.ts`）
+* [ ] **REFACTOR**: 既存E2Eテストの一時ディレクトリ生成をこのヘルパに置換
 
 ---
 
-## 🔜 残タスク（MVP必須）
+## 1. プランフェーズ：チェックリスト & マニフェスト生成
 
-### A. `run` コマンド（コア）
-了解！このコードベースから**TODOに沿って実装**を進めました。まずは **A: runコマンド（コア）** を最小構成〜必要十分まで一気に入れて、テストも追加しています。以下のファイルを追加/更新してください（全置換OK）。入れたら `pnpm build && pnpm test` で通る想定です（私見）。
+* [ ] **RED**: `tests/plan.checklists.test.ts` 新規
 
----
+  * `splitshot plan --objective "Hello" --workers 2` を実行
+  * 期待:
 
-```diff
-=== BEGIN FILE: src/core/runner.ts ===
-+import fs from "node:fs";
-+import path from "node:path";
-+import os from "node:os";
-+import { spawn } from "node:child_process";
-+import readline from "node:readline";
-+import crypto from "node:crypto";
-+import { buildBatches } from "./scheduler.js";
-+import type { Assignment, Plan, TaskSpec } from "./types";
-+
-+// ---------- CODEX_HOME 競合検知 ----------
-+export class DuplicateCodexHomeError extends Error {
-+  homes: string[];
-+  constructor(message: string, homes: string[]) {
-+    super(message);
-+    this.name = "DuplicateCodexHomeError";
-+    this.homes = homes;
-+  }
-+}
-+
-+export function ensureUniqueCodexHomes(
-+  assignments: Assignment[],
-+  { autoIsolate }: { autoIsolate: boolean }
-+): { assignments: Assignment[]; mapping: Record<string, string> } {
-+  const byHome = new Map<string, number[]>();
-+  assignments.forEach((a, i) => {
-+    const arr = byHome.get(a.codexHome) ?? [];
-+    arr.push(i);
-+    byHome.set(a.codexHome, arr);
-+  });
-+
-+  const dups = [...byHome.entries()].filter(([, idxs]) => idxs.length > 1);
-+  if (dups.length === 0) {
-+    return {
-+      assignments: assignments.map((a) => ({ ...a })),
-+      mapping: Object.fromEntries(assignments.map((a) => [a.taskId, a.codexHome])),
-+    };
-+  }
-+  if (!autoIsolate) {
-+    const homes = dups.map(([h]) => h);
-+    throw new DuplicateCodexHomeError(
-+      `Duplicate CODEX_HOME detected: ${homes.join(
-+        ", "
-+      )}. Use --auto-isolate to suffix unique directories.`,
-+      homes
-+    );
-+  }
-+  const cloned = assignments.map((a) => ({ ...a }));
-+  for (const [, idxs] of dups) {
-+    for (let j = 1; j < idxs.length; j++) {
-+      const i = idxs[j];
-+      const short = crypto.randomUUID().slice(0, 6);
-+      cloned[i].codexHome = `${cloned[i].codexHome}-iso-${short}`;
-+    }
-+  }
-+  return {
-+    assignments: cloned,
-+    mapping: Object.fromEntries(cloned.map((a) => [a.taskId, a.codexHome])),
-+  };
-+}
-+
-+// ---------- events.ndjson ライター ----------
-+type EventRecord = {
-+  t: number;
-+  type: "state" | "stdout" | "stderr" | "jsonl";
-+  runId: string;
-+  data: any;
-+};
-+
-+function createEventsWriter(filepath: string) {
-+  fs.mkdirSync(path.dirname(filepath), { recursive: true });
-+  const ws = fs.createWriteStream(filepath, { flags: "a" });
-+  let queued = 0;
-+  return {
-+    write(obj: EventRecord) {
-+      // 行バッファ詰まり対策で軽くcork/uncork
-+      if (++queued % 200 === 0) ws.cork();
-+      ws.write(JSON.stringify(obj) + "\n");
-+      if (queued % 200 === 0) process.nextTick(() => ws.uncork());
-+    },
-+    async close() {
-+      await new Promise<void>((r) => ws.end(r));
-+    },
-+  };
-+}
-+
-+// ---------- rollout-*.jsonl フォロワ ----------
-+class JsonlFollower {
-+  private timer?: NodeJS.Timeout;
-+  private positions = new Map<string, number>();
-+  private stopped = false;
-+  constructor(
-+    private sessionsDir: string,
-+    private onLine: (line: string) => void,
-+    private intervalMs = 200
-+  ) {}
-+
-+  start() {
-+    const tick = () => {
-+      if (this.stopped) return;
-+      try {
-+        if (fs.existsSync(this.sessionsDir)) {
-+          const stack = this.listJsonl(this.sessionsDir);
-+          for (const fp of stack) this.drain(fp);
-+        }
-+      } catch {
-+        // noop
-+      }
-+      this.timer = setTimeout(tick, this.intervalMs);
-+    };
-+    tick();
-+  }
-+
-+  stop() {
-+    this.stopped = true;
-+    if (this.timer) clearTimeout(this.timer);
-+  }
-+
-+  private listJsonl(dir: string): string[] {
-+    const out: string[] = [];
-+    for (const ent of safeReaddir(dir)) {
-+      const p = path.join(dir, ent);
-+      const st = safeStat(p);
-+      if (st?.isDirectory()) out.push(...this.listJsonl(p));
-+      else if (/rollout-.*\.jsonl$/.test(ent)) out.push(p);
-+    }
-+    return out.sort();
-+  }
-+
-+  private drain(fp: string) {
-+    const pos = this.positions.get(fp) ?? 0;
-+    const st = safeStat(fp);
-+    if (!st) return;
-+    if (st.size < pos) {
-+      // ローテーション/truncate
-+      this.positions.set(fp, 0);
-+      return;
-+    }
-+    if (st.size === pos) return;
-+    const fd = fs.openSync(fp, "r");
-+    try {
-+      const len = st.size - pos;
-+      const buf = Buffer.allocUnsafe(len);
-+      fs.readSync(fd, buf, 0, len, pos);
-+      this.positions.set(fp, st.size);
-+      const text = buf.toString("utf8");
-+      for (const line of text.split(/\r?\n/)) {
-+        if (!line.trim()) continue;
-+        this.onLine(line);
-+      }
-+    } finally {
-+      fs.closeSync(fd);
-+    }
-+  }
-+}
-+
-+function safeReaddir(dir: string): string[] {
-+  try {
-+    return fs.readdirSync(dir);
-+  } catch {
-+    return [];
-+  }
-+}
-+function safeStat(p: string) {
-+  try {
-+    return fs.statSync(p);
-+  } catch {
-+    return undefined;
-+  }
-+}
-+
-+// ---------- ランナ本体 ----------
-+type RunAllOpts = {
-+  plan: Plan;
-+  assignments: Assignment[];
-+  maxParallel: number;
-+  codexCmd?: string;
-+  codexArgs?: string[];
-+  runDir: string;
-+};
-+
-+export async function runAll(opts: RunAllOpts): Promise<number> {
-+  const { plan, runDir } = opts;
-+  const events = createEventsWriter(path.join(runDir, "events.ndjson"));
-+  const batches = buildBatches(plan.tasks);
-+  const byId = new Map<string, TaskSpec>(plan.tasks.map((t) => [t.id, t]));
-+  const asnById = new Map<string, Assignment>(
-+    opts.assignments.map((a) => [a.taskId, a])
-+  );
-+  const status = new Map<string, "pending" | "running" | "success" | "failed" | "blocked">();
-+  plan.tasks.forEach((t) => status.set(t.id, "pending"));
-+
-+  let anyFailed = false;
-+
-+  for (const layer of batches) {
-+    const runnable: TaskSpec[] = [];
-+    for (const t of layer) {
-+      const deps = t.dependsOn ?? [];
-+      const failedDeps = deps.filter((d) => status.get(d) === "failed");
-+      if (failedDeps.length > 0) {
-+        status.set(t.id, "blocked");
-+        events.write({
-+          t: Date.now(),
-+          type: "state",
-+          runId: t.id,
-+          data: { phase: "blocked", reason: "dependency_failed", deps: failedDeps },
-+        });
-+      } else {
-+        runnable.push(t);
-+      }
-+    }
-+
-+    await runWithLimit(
-+      opts.maxParallel,
-+      runnable.map((t) => async () => {
-+        const a = asnById.get(t.id)!;
-+        fs.mkdirSync(a.codexHome, { recursive: true });
-+        status.set(t.id, "running");
-+        events.write({ t: Date.now(), type: "state", runId: t.id, data: { phase: "start" } });
-+
-+        // rollout フォロー開始
-+        const follower = new JsonlFollower(
-+          path.join(a.codexHome, "sessions"),
-+          (line) => events.write({ t: Date.now(), type: "jsonl", runId: t.id, data: { line } })
-+        );
-+        follower.start();
-+
-+        const code = await spawnCodex(t.id, a, opts.codexCmd, opts.codexArgs, runDir, (kind, line) =>
-+          events.write({ t: Date.now(), type: kind, runId: t.id, data: { line } })
-+        );
-+
-+        // 少し待ってから follower 停止（最後の追記を拾う）
-+        await new Promise((r) => setTimeout(r, 200));
-+        follower.stop();
-+
-+        events.write({
-+          t: Date.now(),
-+          type: "state",
-+          runId: t.id,
-+          data: { phase: "exit", code },
-+        });
-+
-+        if (code === 0) status.set(t.id, "success");
-+        else {
-+          status.set(t.id, "failed");
-+          anyFailed = true;
-+        }
-+      })
-+    );
-+  }
-+
-+  await events.close();
-+  return anyFailed ? 1 : 0;
-+}
-+
-+async function runWithLimit(n: number, jobs: Array<() => Promise<void>>) {
-+  const q = jobs.slice();
-+  let running: Promise<void>[] = [];
-+  const kick = () => {
-+    while (running.length < n && q.length) running.push(q.shift()!().finally(() => {
-+      running = running.filter((p) => p !== pr);
-+    }));
-+    const pr = Promise.race(running);
-+    return pr;
-+  };
-+  while (running.length < n && q.length) {
-+    running.push(q.shift()!().finally(() => {
-+      running = running.filter((p) => p !== pr);
-+    }));
-+    var pr = Promise.resolve(); // eslint-disable-line
-+  }
-+  while (running.length || q.length) await kick();
-+}
-+
-+function buildSpawnArgs(codexCmd?: string, codexArgs?: string[]) {
-+  const cmd = codexCmd ?? "codex";
-+  const args = codexArgs ?? [];
-+  const isJs = cmd.endsWith(".js");
-+  if (isJs) {
-+    return { command: process.execPath, args: [cmd, ...args] };
-+  }
-+  return { command: cmd, args };
-+}
-+
-+async function spawnCodex(
-+  runId: string,
-+  a: Assignment,
-+  codexCmd: string | undefined,
-+  codexArgs: string[] | undefined,
-+  runDir: string,
-+  onLine: (kind: "stdout" | "stderr", line: string) => void
-+): Promise<number> {
-+  const { command, args } = buildSpawnArgs(codexCmd, codexArgs);
-+  const env = { ...process.env, CODEX_HOME: path.resolve(a.codexHome), SPLITSHOT_RUN_ID: runId };
-+  const child = spawn(command, args, {
-+    cwd: a.worktreeDir || process.cwd(),
-+    env,
-+    stdio: ["ignore", "pipe", "pipe"],
-+    windowsHide: true,
-+  });
-+
-+  const makeRl = (s: NodeJS.ReadableStream) =>
-+    readline.createInterface({ input: s, crlfDelay: Infinity });
-+
-+  const outRl = makeRl(child.stdout!);
-+  const errRl = makeRl(child.stderr!);
-+  outRl.on("line", (l) => onLine("stdout", l));
-+  errRl.on("line", (l) => onLine("stderr", l));
-+
-+  const code = await new Promise<number>((resolve) => {
-+    child.on("close", (code) => resolve(code ?? 1));
-+  });
-+  return code;
-+}
-=== END FILE: src/core/runner.ts ===
-```
+    * `./.splitshot/plan-<ts>/plan.json` が存在（`plan.schema.json` に合致）
+    * `./.splitshot/plan-<ts>/plan.prompt.txt` が存在
+    * `./.splitshot/plan-<ts>/checklists/worker-01.md`, `worker-02.md` が存在
+    * `./.splitshot/plan-<ts>/manifest.json` に `version:1`, `workers.length===2`、`checklist` パスが相対で入っている
+* [ ] **GREEN**: `src/cli/plan.ts` を拡張
 
-```diff
-=== BEGIN FILE: src/cli/run.ts ===
-+import { Command } from "commander";
-+import fs from "node:fs";
-+import path from "node:path";
-+import type { Assignments, Plan } from "../core/types";
-+import { ensureUniqueCodexHomes, DuplicateCodexHomeError, runAll } from "../core/runner.js";
-+
-+function readJson<T>(p: string): T {
-+  return JSON.parse(fs.readFileSync(path.resolve(p), "utf8")) as T;
-+}
-+
-+export function cmdRun() {
-+  const cmd = new Command("run");
-+  cmd
-+    .description("Execute plan tasks with scheduling and tailing Codex outputs")
-+    .option("--plan <file>", "Plan JSON file")
-+    .option("--assignments <file>", "Assignments JSON file")
-+    .option("--max-parallel <n>", "Max parallel tasks", (v) => parseInt(v, 10), 1)
-+    .option("--codex <path>", "Runner binary or JS stub", "codex-runner")
-+    .option("--codex-args <args>", "Extra args (space separated)")
-+    .option("--auto-isolate", "Auto suffix CODEX_HOME conflicts", false)
-+    .action(async (opts) => {
-+      if (!opts.plan) throw new Error("--plan is required");
-+      if (!opts.assignments) throw new Error("--assignments is required");
-+      const plan = readJson<Plan>(opts.plan);
-+      const asn = readJson<Assignments>(opts.assignments);
-+
-+      let { assignments } = asn;
-+      let mapping: Record<string, string> = {};
-+      try {
-+        const resolved = ensureUniqueCodexHomes(assignments, { autoIsolate: !!opts.autoIsolate });
-+        assignments = resolved.assignments;
-+        mapping = resolved.mapping;
-+      } catch (e) {
-+        if (e instanceof DuplicateCodexHomeError) {
-+          console.error(e.message);
-+          process.exit(1);
-+          return;
-+        }
-+        throw e;
-+      }
-+
-+      const root = path.resolve(".codex-parallel");
-+      const runsBase = path.join(root, "runs");
-+      fs.mkdirSync(runsBase, { recursive: true });
-+      const ts = Date.now();
-+      const runDir = path.join(runsBase, String(ts));
-+      fs.mkdirSync(runDir, { recursive: true });
-+
-+      // メタ
-+      fs.writeFileSync(
-+        path.join(runDir, "run.meta.json"),
-+        JSON.stringify(
-+          { planId: asn.planId ?? null, codexHomes: mapping, maxParallel: opts.maxParallel },
-+          null,
-+          2
-+        )
-+      );
-+
-+      const codexArgs = typeof opts.codexArgs === "string" ? opts.codexArgs.split(/\s+/).filter(Boolean) : undefined;
-+      const code = await runAll({
-+        plan,
-+        assignments,
-+        maxParallel: opts.maxParallel,
-+        codexCmd: opts.codex,
-+        codexArgs,
-+        runDir,
-+      });
-+
-+      // latest ポインタ
-+      fs.writeFileSync(path.join(runsBase, "latest.json"), JSON.stringify({ runDir }, null, 2));
-+
-+      process.exit(code);
-+    });
-+
-+  return cmd;
-+}
-=== END FILE: src/cli/run.ts ===
-```
-
-```diff
-=== BEGIN FILE: src/cli/index.ts ===
- import { Command } from "commander";
- import { version, description, name } from "../../package.json";
- import { cmdPlan } from "./plan.js";
- import { cmdAssign } from "./assign.js";   // ← 追加
-+import { cmdRun } from "./run.js";
- 
- 
- const program = new Command();
- 
- program
-     .name(name || "splitshot")
-     .description(description || "Parallel Codex planner & runner (CLI MVP)")
-     .version(version);
- 
- program.addCommand(cmdPlan());
- program.addCommand(cmdAssign());
-+program.addCommand(cmdRun());
- 
- program.parseAsync().catch((err) => {
-     console.error(err instanceof Error ? err.message : String(err));
-     process.exit(1);
- });
- 
-=== END FILE: src/cli/index.ts ===
-```
-
-```diff
-=== BEGIN FILE: tests/fixtures/codex-runner-stub.js ===
-+#!/usr/bin/env node
-+// ランナー用スタブ：stdout/stderrを出し、CODEX_HOME/sessions に rollout-*.jsonl を生成
-+import fs from "node:fs";
-+import path from "node:path";
-+
-+const runId = process.env.SPLITSHOT_RUN_ID || "unknown";
-+const home = process.env.CODEX_HOME || process.cwd();
-+const force = (process.env.SPLITSHOT_FORCE_FAIL_TASK_IDS || "")
-+  .split(",")
-+  .map((s) => s.trim())
-+  .filter(Boolean);
-+
-+function sleep(ms) {
-+  return new Promise((r) => setTimeout(r, ms));
-+}
-+
-+async function main() {
-+  process.stdout.write(`[${runId}] hello from stdout 1\n`);
-+  process.stderr.write(`[${runId}] warn from stderr 1\n`);
-+
-+  const sess = path.join(home, "sessions", `s-${Date.now()}`);
-+  fs.mkdirSync(sess, { recursive: true });
-+  const f1 = path.join(sess, "rollout-1.jsonl");
-+  fs.writeFileSync(f1, JSON.stringify({ runId, step: 1, msg: "start" }) + "\n");
-+
-+  await sleep(30);
-+  fs.appendFileSync(f1, JSON.stringify({ runId, step: 2, msg: "mid" }) + "\n");
-+  process.stdout.write(`[${runId}] hello from stdout 2\n`);
-+
-+  // 新しいファイルが「後から」現れるケース
-+  await sleep(30);
-+  const f2 = path.join(sess, "rollout-2.jsonl");
-+  fs.writeFileSync(f2, JSON.stringify({ runId, step: 3, msg: "new-file" }) + "\n");
-+  process.stderr.write(`[${runId}] warn from stderr 2\n`);
-+
-+  if (force.includes(runId)) {
-+    process.stderr.write(`[${runId}] forced failure\n`);
-+    process.exit(1);
-+    return;
-+  }
-+  process.exit(0);
-+}
-+
-+await main();
-=== END FILE: tests/fixtures/codex-runner-stub.js ===
-```
-
-```diff
-=== BEGIN FILE: tests/run.e2e.test.ts ===
-+import { describe, it, expect } from "vitest";
-+import { spawnSync } from "node:child_process";
-+import fs from "node:fs";
-+import path from "node:path";
-+import { tmpdir } from "node:os";
-+
-+const root = process.cwd();
-+const cli = path.resolve("dist/cli/index.js");
-+const plan = path.resolve("tests/fixtures/plan-min.json");
-+const stub = path.resolve("tests/fixtures/codex-runner-stub.js");
-+
-+function mkTmp(prefix: string) {
-+  const p = fs.mkdtempSync(path.join(tmpdir(), prefix));
-+  return p;
-+}
-+function readLines(p: string) {
-+  return fs.readFileSync(p, "utf8").trim().split(/\r?\n/).filter(Boolean);
-+}
-+
-+describe("run (E2E): dependsOn + maxParallel=1", () => {
-+  it("respects dependsOn order and emits events.ndjson", () => {
-+    const work = mkTmp("splitshot-e2e-");
-+    const asn = {
-+      assignments: [
-+        { taskId: "t1", worktreeDir: path.join(work, "wt1"), codexHome: path.join(work, ".home-t1") },
-+        { taskId: "t2", worktreeDir: path.join(work, "wt2"), codexHome: path.join(work, ".home-t2") },
-+      ],
-+    };
-+    const asnFile = path.join(work, "assignments.json");
-+    fs.writeFileSync(asnFile, JSON.stringify(asn, null, 2));
-+
-+    const out = spawnSync(process.execPath, [
-+      cli,
-+      "run",
-+      "--plan",
-+      plan,
-+      "--assignments",
-+      asnFile,
-+      "--codex",
-+      stub,
-+      "--max-parallel",
-+      "1",
-+    ], { cwd: root });
-+
-+    expect(out.status, String(out.stderr)).toBe(0);
-+
-+    const latest = JSON.parse(
-+      fs.readFileSync(path.join(work, ".codex-parallel", "runs", "latest.json"), "utf8")
-+    );
-+    const ev = readLines(path.join(latest.runDir, "events.ndjson")).map((l) => JSON.parse(l));
-+
-+    const starts = ev.filter((e) => e.type === "state" && e.data?.phase === "start").map((e) => e.runId);
-+    // t1 が先、t2 が後
-+    expect(starts[0]).toBe("t1");
-+    expect(starts[1]).toBe("t2");
-+  });
-+});
-=== END FILE: tests/run.e2e.test.ts ===
-```
-
-```diff
-=== BEGIN FILE: tests/run.auto-isolate.e2e.test.ts ===
-+import { describe, it, expect } from "vitest";
-+import { spawnSync } from "node:child_process";
-+import fs from "node:fs";
-+import path from "node:path";
-+import { tmpdir } from "node:os";
-+
-+const root = process.cwd();
-+const cli = path.resolve("dist/cli/index.js");
-+const plan = path.resolve("tests/fixtures/plan-min.json");
-+const stub = path.resolve("tests/fixtures/codex-runner-stub.js");
-+
-+function mkTmp(prefix: string) {
-+  return fs.mkdtempSync(path.join(tmpdir(), prefix));
-+}
-+function readLines(p: string) {
-+  return fs.readFileSync(p, "utf8").trim().split(/\r?\n/).filter(Boolean);
-+}
-+
-+describe("run: CODEX_HOME conflicts", () => {
-+  it("fails without --auto-isolate", () => {
-+    const work = mkTmp("splitshot-conf-");
-+    const shared = path.join(work, ".home-shared");
-+    const asn = {
-+      assignments: [
-+        { taskId: "t1", worktreeDir: path.join(work, "wt1"), codexHome: shared },
-+        { taskId: "t2", worktreeDir: path.join(work, "wt2"), codexHome: shared },
-+      ],
-+    };
-+    const asnFile = path.join(work, "assign.json");
-+    fs.writeFileSync(asnFile, JSON.stringify(asn, null, 2));
-+
-+    const out = spawnSync(process.execPath, [
-+      cli,
-+      "run",
-+      "--plan",
-+      plan,
-+      "--assignments",
-+      asnFile,
-+      "--codex",
-+      stub,
-+      "--max-parallel",
-+      "2",
-+    ], { cwd: root });
-+
-+    expect(out.status).not.toBe(0);
-+    const err = (out.stderr || Buffer.alloc(0)).toString();
-+    expect(err).toMatch(/Duplicate CODEX_HOME/i);
-+  });
-+
-+  it("succeeds with --auto-isolate and both tasks start", () => {
-+    const work = mkTmp("splitshot-auto-");
-+    const shared = path.join(work, ".home-shared");
-+    const asn = {
-+      assignments: [
-+        { taskId: "t1", worktreeDir: path.join(work, "wt1"), codexHome: shared },
-+        { taskId: "t2", worktreeDir: path.join(work, "wt2"), codexHome: shared },
-+      ],
-+    };
-+    const asnFile = path.join(work, "assign.json");
-+    fs.writeFileSync(asnFile, JSON.stringify(asn, null, 2));
-+
-+    const out = spawnSync(process.execPath, [
-+      cli,
-+      "run",
-+      "--plan",
-+      plan,
-+      "--assignments",
-+      asnFile,
-+      "--codex",
-+      stub,
-+      "--max-parallel",
-+      "2",
-+      "--auto-isolate",
-+    ], { cwd: root });
-+
-+    expect(out.status, String(out.stderr)).toBe(0);
-+
-+    const latest = JSON.parse(fs.readFileSync(path.join(work, ".codex-parallel", "runs", "latest.json"), "utf8"));
-+    const lines = readLines(path.join(latest.runDir, "events.ndjson"));
-+    const starts = lines.map((l) => JSON.parse(l)).filter((e) => e.type === "state" && e.data?.phase === "start").map((e) => e.runId);
-+    expect(new Set(starts)).toEqual(new Set(["t1", "t2"]));
-+  });
-+});
-=== END FILE: tests/run.auto-isolate.e2e.test.ts ===
-```
-
-```diff
-=== BEGIN FILE: tests/run.propagation.e2e.test.ts ===
-+import { describe, it, expect } from "vitest";
-+import { spawnSync } from "node:child_process";
-+import fs from "node:fs";
-+import path from "node:path";
-+import { tmpdir } from "node:os";
-+
-+const root = process.cwd();
-+const cli = path.resolve("dist/cli/index.js");
-+const plan = path.resolve("tests/fixtures/plan-min.json");
-+const stub = path.resolve("tests/fixtures/codex-runner-stub.js");
-+
-+function mkTmp(prefix: string) {
-+  return fs.mkdtempSync(path.join(tmpdir(), prefix));
-+}
-+function readLines(p: string) {
-+  return fs.readFileSync(p, "utf8").trim().split(/\r?\n/).filter(Boolean);
-+}
-+
-+describe("run: failure propagation", () => {
-+  it("marks dependent tasks as blocked and exits non-zero", () => {
-+    const work = mkTmp("splitshot-prop-");
-+    const asn = {
-+      assignments: [
-+        { taskId: "t1", worktreeDir: path.join(work, "wt1"), codexHome: path.join(work, ".home-t1") },
-+        { taskId: "t2", worktreeDir: path.join(work, "wt2"), codexHome: path.join(work, ".home-t2") }, // dependsOn: t1 (plan-min側)
-+      ],
-+    };
-+    const asnFile = path.join(work, "assign.json");
-+    fs.writeFileSync(asnFile, JSON.stringify(asn, null, 2));
-+
-+    const out = spawnSync(process.execPath, [
-+      cli,
-+      "run",
-+      "--plan",
-+      plan,
-+      "--assignments",
-+      asnFile,
-+      "--codex",
-+      stub,
-+      "--max-parallel",
-+      "1",
-+    ], {
-+      cwd: root,
-+      env: {
-+        ...process.env,
-+        SPLITSHOT_FORCE_FAIL_TASK_IDS: "t1",
-+      },
-+    });
-+
-+    expect(out.status).not.toBe(0);
-+
-+    const latest = JSON.parse(fs.readFileSync(path.join(work, ".codex-parallel", "runs", "latest.json"), "utf8"));
-+    const evs = readLines(path.join(latest.runDir, "events.ndjson")).map((l) => JSON.parse(l));
-+    const starts = evs.filter((e) => e.type === "state" && e.data?.phase === "start").map((e) => e.runId);
-+    expect(starts).toContain("t1");
-+    expect(starts).not.toContain("t2");
-+
-+    const blocked = evs.find((e) => e.type === "state" && e.runId === "t2" && e.data?.phase === "blocked");
-+    expect(blocked?.data?.reason).toBe("dependency_failed");
-+    expect(blocked?.data?.deps).toContain("t1");
-+  });
-+});
-=== END FILE: tests/run.propagation.e2e.test.ts ===
-```
+  * 出力基底：`./.splitshot/plan-<timestamp>/`
+  * 既存の Plan 生成・Ajv検証は維持
+  * 分配ロジック：タスク（トポロジー順）を `workers` 本にラウンドロビンで割当
+  * Markdown生成（各ワーカー）：見出し/Context/Tasks（チェックボックス）/Notes
+  * `manifest.json` 生成：`{version:1, objective, createdAt, workers:[{id:"w01", checklist:"checklists/worker-01.md"}, …]}`
+* [ ] **REFACTOR**: Markdownテンプレートを `src/templates/checklist.md.tpl` に切り出し（将来のカスタムに備える）
 
 ---
 
-## ここまでで満たしたTODO
+## 2. 旧 assign の廃止
 
-* ✅ `--assignments <file>` 読み込み
-* ✅ スケジューリング層実行（`buildBatches`）
-* ✅ `--max-parallel` セマフォ（自前 concurrency limiter）
-* ✅ プロセス起動（`spawn` / `cwd=worktreeDir` / `env.CODEX_HOME` / `.js`は`process.execPath`経由）
-* ✅ `--codex-args` 透過
-* ✅ **CODEX_HOME競合検知** / `--auto-isolate`
-* ✅ **ログ収集** `stdout` / `stderr` 行単位 → `events.ndjson`
-* ✅ **jsonl取り込み**：`$CODEX_HOME/sessions/**/rollout-*.jsonl` を**後出しにも追従**
-* ✅ **状態管理**：`start/exit/blocked` イベント、exit code 記録
-* ✅ **失敗伝播**：依存失敗 → `blocked`（startしない）
-* ✅ **終了コード**：いずれか失敗で非0
-* ✅ **テスト**：
-  * E2E（依存順＋maxParallel=1、`events.ndjson`生成）
-  * `--auto-isolate` の動作（有/無）
-  * 失敗伝播（`t1`失敗 → `t2` blocked）
-  * ランナースタブで `stdout/stderr/jsonl` 出力（後出しjsonl含む）
-* [ ] 大量ログtest（擬似10万行）で欠落なし
-
-> 私見：大量ログ（10万行）テストは本体が安定してから分離テストにした方がよさそう。必要になったら `codex-runner-stub` にループ出力のオプションを足して測定し、`events.ndjson` の行数をチェックするREDを足しましょう。バックプレッシャは簡易cork/uncorkで既に入れてあります。
-
-
-
-
-### B. `tail` コマンド（ミニマム）
-
-* [ ] `events.ndjson` のフォロー（`--run <id|all>` / `--type` フィルタ）
-* [ ] 色付け（任意）
-* [ ] テスト：フィルタと追尾が効く
-
-### C. `assign` の拡張（仕様にあった分）
-
-* [ ] **自動 worktree 作成**：`--worktree-root` / `--auto-worktree` / `--branch-prefix`
-* [ ] `git` 呼び出しヘルパ（`git.ts`）＋スタブテスト
+* [ ] **RED**: `tests/assign.*.test.ts` を削除 or skip（互換不要）
+* [ ] **GREEN**: `src/cli/index.ts` から `cmdAssign()` の登録削除、`src/cli/assign.ts` を削除
+* [ ] **REFACTOR**: `src/core/git.ts` も削除（参照なくなるため）
 
 ---
 
-## 🧪 品質/DX（MVP同梱したい）
+## 3. run：manifest 駆動で並列実行（plan-dir 基準）
 
-* [ ] `detectCodexFeatures` の単体テスト（help出力スタブ）
-* [ ] `schema.ts` エラー系テスト（必須項目欠落）
-* [ ] `planner`/`readMaybeFile` の単体テスト
-* [ ] `pnpm check` をCI（GitHub Actions）に導入：Linux/Windows × Node 18/20/22
-* [ ] README：Quickstart（スタブ/実機Codexの両方）、コマンド例
-* [ ] ライセンス、`engines`、`example/`（`objective.md` など）
+* [ ] **RED**: `tests/run.manifest.e2e.test.ts` 新規
+
+  * 前段で作った plan-dir を使う
+  * `splitshot run --plan-dir <that>`（`--codex tests/fixtures/codex-runner-stub.js`）
+  * 期待:
+
+    * `<plan-dir>/.runs/latest.json` が存在し、`runDir` が指すディレクトリに `events.ndjson`/`run.meta.json`
+    * `events.ndjson` に各ワーカー `w01`, `w02` の `state:start` → `state:exit` が出る
+    * `run.meta.json` に `{ workers:["w01","w02"], maxParallel:2, codexHomes:{ w01:…, w02:… } }`
+* [ ] **GREEN**: `src/cli/run.ts` を改修
+
+  * オプション：`--plan-dir <dir>`（省略時は `./.splitshot/plan-*` の **最新**を自動解決）
+  * `manifest.json` を読み、`workers[]` を対象に並列実行
+  * 各ワーカー：
+
+    * `prompt` = `checklists/worker-XX.md` を読み込み、Codexへ渡す本文に整形
+    * `cwd = <plan-dir>`
+    * `env`：
+
+      * `CODEX_HOME = <plan-dir>/.homes/<workerId>`（重複時は `-iso-<uniq>` 付与；`--auto-isolate` 既定ON）
+      * `SPLITSHOT_RUN_ID = <workerId>`
+      * `SPLITSHOT_CHECKLIST_FILE = <abs>`
+  * ログ収集：既存 runner/tailer を流用し `<plan-dir>/.runs/<ts>/events.ndjson` に出力
+  * `<plan-dir>/.runs/latest.json` を更新
+* [ ] **REFACTOR**: `src/core/runner.ts` の `spawnCodex` 引数を `taskId` ベースから `worker` ベースに名称調整、`CODEX_HOME` 解決・衝突検知を関数化
 
 ---
 
-## 🎯 直近の“次の3手”
+## 4. run：`--codex-bin` の解釈（ネイティブ or .js）
 
-1. **`run` のRED**：最小E2E（2層＋max-parallel=1）で`events.ndjson`生成を期待 → 失敗させる
-2. **Runner/TailerのスタブGREEN**：外部`codex`をまだ呼ばず、擬似プロセスで`events.ndjson`を書かせる
-3. **実プロセス差し替え**：`spawn`＋CODEX_HOME設定→`rollout-*.jsonl`取り込み→失敗伝播
+* [ ] **RED**: `tests/run.codex-bin.script.test.ts` 新規
+
+  * `--codex tests/fixtures/codex-runner-stub.js` で起動
+  * 期待: Windows/Unixとも `.js` は `process.execPath` 経由で spawn され `start/exit` が出る
+* [ ] **GREEN**: `src/core/runner.ts` の spawn 引数構築を修正
+
+  * `"codex"` の場合はそのまま
+  * `*.js` の場合は `command = process.execPath`, `args=[<abs js>, ...extra]`
+* [ ] **REFACTOR**: 判定ロジックを `src/core/spawnArgs.ts` に切り出し
 
 ---
 
-何か順序を微調整したければ言って。`run` の RED 用テスト雛形もすぐ出せます（私見）。
+## 5. tail：plan-dir の latest を既定参照
+
+* [ ] **RED**: `tests/tail.latest.test.ts` 新規
+
+  * `splitshot run` 実行後、`splitshot tail --type stdout,jsonl`（引数なし）で最新 run が読める
+* [ ] **GREEN**: `src/cli/tail.ts` 改修
+
+  * 既定で `--plan-dir` の `.runs/latest.json` を読む
+  * 手動オプション `--events <file>` は温存（テスト支援）
+* [ ] **REFACTOR**: 参照解決をユーティリティ化 `src/core/paths.ts`（`resolveLatestPlanDir()`, `resolveLatestRun()`）
+
+---
+
+## 6. 失敗時の blocked（初期版：ワーカー単位）
+
+* [ ] **RED**: `tests/run.propagation.manifest.e2e.test.ts` 新規
+
+  * `SPLITSHOT_FORCE_FAIL_TASK_IDS="w01"` で `w01` を失敗させる
+  * 期待:
+
+    * `w01` は `start`→`exit(code!=0)`
+    * 未開始ワーカー（例：`w02`）には `state:blocked` が記録され、実行されない
+    * いったん走り出したワーカーは最後まで流す（同時開始のものがあればそのまま完走）
+    * プロセス終了コードは非0
+* [ ] **GREEN**: `src/core/runner.ts`
+
+  * 任意ワーカーの exit 失敗を検知したら、キュー上の未開始ワーカーを `blocked` にしてスキップ
+* [ ] **REFACTOR**: blocked の理由文字列を定数化し、テストで厳密一致
+
+---
+
+## 7. JSONL フォローの堅牢化（新規ファイル追従）
+
+* [ ] **RED**: `tests/run.jsonl.follow.test.ts` 新規
+
+  * ラン中に `$CODEX_HOME/sessions/s-*/rollout-2.jsonl` を作成して追記
+  * 期待: `events.ndjson` に jsonl ラインがすべて取り込まれる（欠落なし）
+* [ ] **GREEN**: `src/core/tailer.ts` 改修
+
+  * 200ms ポーリングで「最新だけ」でなく「未認識ファイル」を検出して tail 追加
+* [ ] **REFACTOR**: ウォッチ対象の index を Map で持ち、読み取り位置を保持
+
+---
+
+## 8. 大量ログ耐性（10万行）
+
+* [ ] **RED**: `tests/run.massive-logs.test.ts` 新規
+
+  * スタブが `stdout` 10万行出力
+  * 期待: `events.ndjson` の `stdout` 行数が一致し、欠落なし（実測で 100k 以上）
+* [ ] **GREEN**: `src/core/eventsWriter.ts` に `cork()/uncork()`（例：200行ごと）・`drain` 待ちを実装
+* [ ] **REFACTOR**: バッファ閾値を `RUN_EVENTS_FLUSH_INTERVAL` として定数化
+
+---
+
+## 9. エラーメッセージ整備
+
+* [ ] **RED**: `tests/errors.messages.test.ts` 新規
+
+  * `codex` 未検出、`manifest.json` 欠落、`checklist` 欠落、`plan-dir` 不在
+  * 期待: コマンド名・原因・対処の短文が含まれる
+* [ ] **GREEN**: `src/cli/plan.ts` / `src/cli/run.ts` / `src/cli/tail.ts` に対処ヒント付きの例外を実装
+* [ ] **REFACTOR**: 共通フォーマッタ `formatCliError(cmd, reason, hint)` を `src/core/errors.ts` に用意
+
+---
+
+## 10. ドキュメントとメタ
+
+* [ ] **RED**: `tests/readme.snippets.test.ts` 新規（任意）
+
+  * README 記載の最短手順（2コマンド）が動くかをスモーク
+* [ ] **GREEN**: `README.md` / `README.en.md` を 2モード手順に更新済みのまま維持
+* [ ] **REFACTOR**: `package.json` の `bin` 名称・`engines`・`scripts` を現状に合わせ調整（`pnpm check`）
+
+---
+
+# 実装対象ファイルサマリ
+
+* 追加:
+
+  * `tests/plan.checklists.test.ts` / `tests/run.manifest.e2e.test.ts` / `tests/tail.latest.test.ts`
+  * `tests/run.propagation.manifest.e2e.test.ts` / `tests/run.jsonl.follow.test.ts` / `tests/run.massive-logs.test.ts`
+  * `tests/helpers/tmp.ts`
+  * `src/core/paths.ts` / `src/core/errors.ts` / `src/core/eventsWriter.ts`（分離する場合）
+  * `src/templates/checklist.md.tpl`
+* 変更:
+
+  * `src/cli/plan.ts` / `src/cli/run.ts` / `src/cli/tail.ts`
+  * `src/core/runner.ts` / `src/core/tailer.ts`
+  * `src/cli/index.ts`（コマンド登録の見直し）
+* 削除:
+
+  * `src/cli/assign.ts` / `src/core/git.ts`
+  * `tests/assign*.test.ts`
+
+---
+
+# テスト観点（抜粋）
+
+* plan 出力の **構造**（チェックリスト/マニフェスト/プロンプト/Plan JSON）
+* run 出力の **配置**（`.runs/latest.json` と `events.ndjson` の整合）
+* **並列制御**（`maxParallel` 既定＝workers数、`--max-parallel` 指定で上書き）
+* **CODEX_HOME 競合**（自動 isolate のサフィックス付与）
+* **ログ完全性**（stdout/stderr/jsonl 各行が欠落しない）
+* **失敗時の挙動**（未開始ワーカーの `blocked`、プロセス終了コード非0）
+* tail の **デフォルト解決**（plan-dir 最新 run を自動参照）
+
+---
+
+このチェックリストに沿って、各 RED→GREEN→REFACTOR を順に進めれば、2モード仕様へ段階的に移行できます。
