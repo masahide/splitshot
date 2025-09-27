@@ -1,57 +1,47 @@
 import { describe, it, expect } from "vitest";
-import { spawnSync } from "node:child_process";
+import { execa } from "execa";
 import fs from "node:fs";
 import path from "node:path";
-import { tmpdir } from "node:os";
+import { parseEventLine, type EventRecord, type StateEvent } from "../src/core/events";
 
-const root = process.cwd();
 const cli = path.resolve("dist/cli/index.js");
-const plan = path.resolve("tests/fixtures/plan-min.json");
-const stub = path.resolve("tests/fixtures/codex-runner-stub.js");
+const runner = path.resolve("tests/fixtures/codex-runner-stub.js");
+const codexStub = path.resolve("tests/fixtures/codex-stub.js");
 
-function mkTmp(prefix: string) {
-    const p = fs.mkdtempSync(path.join(tmpdir(), prefix));
-    return p;
-}
 function readLines(p: string) {
     return fs.readFileSync(p, "utf8").trim().split(/\r?\n/).filter(Boolean);
 }
 
-describe("run (E2E): dependsOn + maxParallel=1", () => {
-    it("respects dependsOn order and emits events.ndjson", () => {
-        const work = mkTmp("splitshot-e2e-");
-        const asn = {
-            assignments: [
-                { taskId: "t1", worktreeDir: path.join(work, "wt1"), codexHome: path.join(work, ".home-t1") },
-                { taskId: "t2", worktreeDir: path.join(work, "wt2"), codexHome: path.join(work, ".home-t2") },
-            ],
-        };
-        const asnFile = path.join(work, "assignments.json");
-        fs.writeFileSync(asnFile, JSON.stringify(asn, null, 2));
 
-        const out = spawnSync(process.execPath, [
-            cli,
-            "run",
-            "--plan",
-            plan,
-            "--assignments",
-            asnFile,
-            "--codex",
-            stub,
-            "--max-parallel",
-            "1",
-        ], { cwd: root });
+describe("run (E2E): maxParallel=1 emits events and serializes workers", () => {
+    it("starts w01 then w02 when maxParallel=1", async () => {
+        // plan-dir を作る（workers=2）
+        const planRes = await execa(process.execPath, [
+            cli, "plan",
+            "--objective", "serial-run",
+            "--workers", "2",
+            "--codex-bin", codexStub
+        ]);
+        const { planDir } = JSON.parse(planRes.stdout);
 
-        expect(out.status, String(out.stderr)).toBe(0);
+        const runRes = await execa(process.execPath, [
+            cli, "run",
+            "--plan-dir", planDir,
+            "--codex-bin", runner,
+            "--max-parallel", "1"
+        ]);
+        expect(runRes.exitCode).toBe(0);
 
-        const latest = JSON.parse(
-            fs.readFileSync(path.join(work, ".codex-parallel", "runs", "latest.json"), "utf8")
-        );
-        const ev = readLines(path.join(latest.runDir, "events.ndjson")).map((l) => JSON.parse(l));
+        const latest = JSON.parse(fs.readFileSync(path.join(planDir, ".runs", "latest.json"), "utf8"));
+        const ev: EventRecord[] = readLines(path.join(latest.runDir, "events.ndjson"))
+            .map(parseEventLine)
+            .filter((e): e is EventRecord => e !== null);
 
-        const starts = ev.filter((e) => e.type === "state" && e.data?.phase === "start").map((e) => e.runId);
-        // t1 が先、t2 が後
-        expect(starts[0]).toBe("t1");
-        expect(starts[1]).toBe("t2");
+        const starts = ev
+            .filter((e): e is StateEvent => e.type === "state" && e.data.phase === "start")
+            .map((e) => e.runId);
+        // w01 が先、w02 が後（manifest の順序通り）
+        expect(starts[0]).toBe("w01");
+        expect(starts[1]).toBe("w02");
     });
 });

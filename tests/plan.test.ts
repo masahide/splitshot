@@ -2,11 +2,13 @@
 import { execa } from "execa";
 import { describe, it, expect } from "vitest";
 import path from "node:path";
+import fs from "node:fs";
+
 
 describe("splitshot plan", () => {
-    it("prints Plan JSON", async () => {
-        const cliPath = path.resolve("dist/cli/index.js");            // ← ここで定義
-        const stub = path.resolve("tests/fixtures/codex-stub.js");    // スタブを使う
+    it("prints planDir and creates manifest/checklists", async () => {
+        const cliPath = path.resolve("dist/cli/index.js");
+        const stub = path.resolve("tests/fixtures/codex-stub.js");
 
         const { stdout } = await execa(process.execPath, [
             cliPath,
@@ -19,9 +21,11 @@ describe("splitshot plan", () => {
             stub,
         ]);
 
-        const json = JSON.parse(stdout);
-        expect(Array.isArray(json.tasks)).toBe(true);
-        expect(json.tasks.length).toBeGreaterThan(0);
-        expect(json.meta?.workers).toBe(2);
+        const out = JSON.parse(stdout);
+        expect(typeof out.planDir).toBe("string");
+        // plan-dir 配下の主要ファイルがあること
+        expect(fs.existsSync(path.join(out.planDir, "manifest.json"))).toBe(true);
+        expect(fs.existsSync(path.join(out.planDir, "checklists", "worker-01.md"))).toBe(true);
+
     });
 });

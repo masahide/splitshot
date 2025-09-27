@@ -1,6 +1,3 @@
-// src/cli/plan.ts
-// Generate a parallel task plan via Codex (--output-schema) and print validated JSON
-
 import { Command } from "commander";
 import fs from "fs";
 import path from "path";
@@ -8,6 +5,8 @@ import { detectCodexFeatures, execCodexWithSchema } from "../core/codex";
 import { loadSchema, assertValid } from "../core/schema";
 import { buildPlannerPrompt } from "../core/planner";
 import type { Plan } from "../core/types";
+import { buildBatches } from "../core/scheduler.js";
+import { ensureDir, createPlanDir, writeFileUtf8 } from "../core/paths.js";
 
 async function readMaybeFile(v?: string): Promise<string | undefined> {
     if (!v) return;
@@ -19,9 +18,10 @@ async function readMaybeFile(v?: string): Promise<string | undefined> {
 export function cmdPlan() {
     const cmd = new Command("plan");
     cmd
-        .description("Generate parallel task plan via Codex --output-schema")
+        .description("Generate plan-dir with plan.json, manifest.json and worker checklists")
         .option("--objective <fileOrText>", "Objective file path or raw text")
         .option("--workers <n>", "Workers hint", (v) => parseInt(v, 10), 3)
+        .option("--out <dir>", "Plan base output directory (default: ./.splitshot)")
         .option("--avoid <globs>", "Comma separated globs to avoid (e.g. infra/**,docs/**)")
         .option("--must <globs>", "Comma separated globs to prioritize")
         .option("--approval <mode>", "suggest|auto|full-auto", "suggest")
@@ -85,19 +85,63 @@ export function cmdPlan() {
             assertValid<Plan>(validate, json);
             const plan = json as Plan;
 
-            // 7) Persist artifacts for reproducibility
-            const outDir = path.resolve(".codex-parallel");
-            fs.mkdirSync(outDir, { recursive: true });
-            const ts = Date.now();
-            fs.writeFileSync(
-                path.join(outDir, `plan-${ts}.json`),
-                JSON.stringify(plan, null, 2),
-                "utf8"
-            );
-            fs.writeFileSync(path.join(outDir, `plan.prompt-${ts}.txt`), prompt, "utf8");
+            // === 7) Create plan-dir structure ===
+            const planBase = path.resolve(opts.out ?? ".splitshot");
+            ensureDir(planBase);
+            const planDir = createPlanDir(planBase);
+            ensureDir(path.join(planDir, "checklists"));
 
-            // 8) Emit to stdout (tooling-friendly)
-            process.stdout.write(JSON.stringify(plan, null, 2) + "\n");
+            // Save raw plan & prompt
+            writeFileUtf8(path.join(planDir, "plan.json"), JSON.stringify(plan, null, 2));
+            writeFileUtf8(path.join(planDir, "plan.prompt.txt"), prompt);
+
+            // === 8) Build topo order then distribute to N worker streams (round robin) ===
+            const layers = buildBatches(plan.tasks);
+            const topo = layers.flat();
+            const N = Math.max(1, Number.isFinite(opts.workers) ? opts.workers : 1);
+            const streams: typeof topo[] = Array.from({ length: N }, () => []);
+            for (let i = 0; i < topo.length; i++) {
+                streams[i % N].push(topo[i]);
+            }
+
+            // Load checklist template
+            const tplPath = path.resolve("src/templates/checklist.md.tpl");
+            const tpl = fs.existsSync(tplPath)
+                ? fs.readFileSync(tplPath, "utf8")
+                : "# Worker <ID> — TODO Checklist\n\n## Context\n<OBJECTIVE>\n\n## Tasks\n<TASKS>\n\n## Notes\n- 出力は JSONL も含めて行単位でわかるように\n- 重要メトリクスは最後に箇条書きで報告\n";
+
+            const workers: { id: string; checklist: string }[] = [];
+            const objectiveExcerpt = objective.trim().slice(0, 800);
+            const pad2 = (n: number) => String(n).padStart(2, "0");
+            for (let i = 0; i < streams.length; i++) {
+                const wid = `w${pad2(i + 1)}`;
+                const rel = `checklists/worker-${pad2(i + 1)}.md`;
+                const abs = path.join(planDir, rel);
+                const tasksMd = streams[i]
+                    .map(
+                        (t) =>
+                            `- [ ] ${t.id}: ${t.title}\n  - Summary: ${t.summary || "-"}\n  - Acceptance: ${t.acceptanceCriteria || "-"}`
+                    )
+                    .join("\n");
+                const body = tpl
+                    .replaceAll("<ID>", pad2(i + 1))
+                    .replaceAll("<OBJECTIVE>", objectiveExcerpt || "(no objective excerpt)")
+                    .replaceAll("<TASKS>", tasksMd || "- [ ] (no tasks)");
+                writeFileUtf8(abs, body);
+                workers.push({ id: wid, checklist: rel });
+            }
+
+            // Manifest
+            const manifest = {
+                version: 1 as const,
+                objective: objectiveExcerpt || "(no objective provided)",
+                createdAt: new Date().toISOString(),
+                workers,
+            };
+            writeFileUtf8(path.join(planDir, "manifest.json"), JSON.stringify(manifest, null, 2));
+
+            // Emit machine-friendly pointer to plan-dir
+            process.stdout.write(JSON.stringify({ planDir }, null, 2) + "\n");
         });
 
     return cmd;

@@ -1,6 +1,7 @@
 import { Command } from "commander";
 import fs from "node:fs";
 import path from "node:path";
+import { findLatestPlanDir } from "../core/paths.js";
 
 type TailOpts = {
     run?: string;               // runId or "all"
@@ -8,13 +9,15 @@ type TailOpts = {
     events?: string;            // (test用) events.ndjson を直接指定
     duration?: number;          // フォロー時間(ms)。未指定なら非フォローで即終了
     interval?: number;          // ポーリング間隔(ms)
+    planDir?: string;           // どの plan-dir の latest を参照するか（省略時は最新の plan-dir）
 };
 
 function resolveEventsFile(opts: TailOpts, cwd: string): string {
     if (opts.events) return path.resolve(cwd, opts.events);
-    const latest = path.resolve(cwd, ".codex-parallel", "runs", "latest.json");
+    const planDir = path.resolve(opts.planDir ?? (findLatestPlanDir(path.resolve(".splitshot")) ?? cwd));
+    const latest = path.join(planDir, ".runs", "latest.json");
     if (!fs.existsSync(latest)) {
-        throw new Error(`latest.json not found at ${latest}. Provide --events <file> or run from the run base dir.`);
+        throw new Error(`latest.json not found at ${latest}. Provide --events <file> or --plan-dir <dir>.`);
     }
     const { runDir } = JSON.parse(fs.readFileSync(latest, "utf8"));
     const ev = path.join(runDir, "events.ndjson");
@@ -100,6 +103,8 @@ export function cmdTail() {
         .option("--type <csv>", "Filter types: stdout,stderr,jsonl,state")
         // テスト補助: 直接 events.ndjson を指定できるように
         .option("--events <file>", "Path to events.ndjson (otherwise uses ./.codex-parallel/runs/latest.json)")
+        // plan-dir 指定
+        .option("--plan-dir <dir>", "Plan directory (default: latest under ./.splitshot)")
         .option("--duration <ms>", "Follow duration milliseconds (if omitted, just prints current contents and exit)", (v) => parseInt(v, 10), undefined)
         .option("--interval <ms>", "Polling interval milliseconds", (v) => parseInt(v, 10), 100)
         .action(async (opts: TailOpts) => {

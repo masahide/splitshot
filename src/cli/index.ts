@@ -1,7 +1,6 @@
 import { Command } from "commander";
 import { version, description, name } from "../../package.json";
 import { cmdPlan } from "./plan.js";
-import { cmdAssign } from "./assign.js";   // ← 追加
 import { cmdRun } from "./run.js";
 import { cmdTail } from "./tail.js";
 
@@ -10,11 +9,10 @@ const program = new Command();
 
 program
     .name(name || "splitshot")
-    .description(description || "Parallel Codex planner & runner (CLI MVP)")
+    .description(description || "Two-mode CLI: plan (checklists+manifest) & run (parallel Codex)")
     .version(version);
 
 program.addCommand(cmdPlan());
-program.addCommand(cmdAssign());
 program.addCommand(cmdRun());
 program.addCommand(cmdTail());
 
