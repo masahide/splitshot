@@ -2,6 +2,9 @@ import { Command } from "commander";
 import fs from "fs";
 import path from "path";
 import type { Plan, Assignments, Assignment } from "../core/types";
+import { buildAddWorktreeCommand, type WorktreeAddCommand } from "../core/git.js";
+
+
 
 function parseMap(map?: string): Record<string, string> {
     if (!map) return {};
@@ -28,6 +31,9 @@ export function cmdAssign() {
         .option("--map <pairs>", "Mapping like t1=../wt1,t2=../wt2")
         .option("--codex-home-template <tpl>", "Template for CODEX_HOME (use <worktreeDir>,<taskId>)",
             "<worktreeDir>/.codex-home-<taskId>")
+        .option("--worktree-root <dir>", "Base directory to create worktrees under")
+        .option("--auto-worktree", "Emit git worktree add commands for each assignment", false)
+        .option("--branch-prefix <prefix>", "Branch prefix for worktrees", "splitshot/")
         .action(async (opts) => {
             if (!opts.plan) throw new Error("--plan is required");
             const planPath = path.resolve(opts.plan);
@@ -35,10 +41,15 @@ export function cmdAssign() {
 
             const m = parseMap(opts.map);
             const asg: Assignments = { assignments: [] };
+            const gitCmds: WorktreeAddCommand[] = [];
 
             for (const t of plan.tasks) {
-                const worktreeDir = m[t.id];
-                if (!worktreeDir) throw new Error(`no mapping for taskId=${t.id}`);
+                // worktreeDir は map を最優先、なければ --worktree-root/<taskId>
+                let worktreeDir = m[t.id];
+                if (!worktreeDir && opts.worktreeRoot) {
+                    worktreeDir = path.resolve(String(opts.worktreeRoot), t.id);
+                }
+                if (!worktreeDir) throw new Error(`no mapping for taskId=${t.id} (provide --map or --worktree-root)`);
                 const codexHome = renderTemplate(opts.codexHomeTemplate, { taskId: t.id, worktreeDir });
                 const a: Assignment = {
                     taskId: t.id,
@@ -47,6 +58,18 @@ export function cmdAssign() {
                     profile: t.profile,
                 };
                 asg.assignments.push(a);
+                if (opts.autoWorktree) {
+                    const branch = String(opts.branchPrefix ?? "splitshot/") + t.id;
+                    const cmd = buildAddWorktreeCommand({
+                        gitRoot: process.cwd(),
+                        worktreeDir,
+                        branch,
+                        baseRef: "HEAD",
+                        force: false,
+                        noCheckout: false,
+                    });
+                    gitCmds.push(cmd);
+                }
             }
 
             // 保存
@@ -55,7 +78,10 @@ export function cmdAssign() {
             const fp = path.join(outDir, `assignments-${Date.now()}.json`);
             fs.writeFileSync(fp, JSON.stringify(asg, null, 2));
 
-            process.stdout.write(JSON.stringify(asg, null, 2) + "\n");
+            // 画面出力には git コマンドも含める（テスト/可視化用）
+            const out: Assignments & { git?: { worktreeAdd: WorktreeAddCommand[] } } = { ...asg };
+            if (opts.autoWorktree) out.git = { worktreeAdd: gitCmds };
+            process.stdout.write(JSON.stringify(out, null, 2) + "\n");
         });
 
     return cmd;
