@@ -2,7 +2,11 @@ import { execa } from "execa";
 import fs from "fs";
 import path from "path";
 
-export type CodexFeatures = { hasOutputSchema: boolean; hasJson: boolean };
+export type CodexFeatures = {
+    hasOutputSchema: boolean;
+    hasJson: boolean;
+    hasOutputLastMessage: boolean;
+};
 
 export type ExecPlanArgs = {
     bin?: string;
@@ -11,6 +15,10 @@ export type ExecPlanArgs = {
     plannerHome?: string; // CODEX_HOME for planner
     extraArgs?: string[];
     timeoutMs?: number;
+    /** If provided, pass --output-last-message <path> and prefer reading it */
+    outputLastMessagePath?: string;
+    /** Add --color never to reduce noisy output */
+    colorNever?: boolean;
 };
 
 export async function execCodexWithSchema(a: ExecPlanArgs): Promise<string> {
@@ -20,18 +28,21 @@ export async function execCodexWithSchema(a: ExecPlanArgs): Promise<string> {
         fs.mkdirSync(a.plannerHome, { recursive: true });
         env.CODEX_HOME = path.resolve(a.plannerHome);
     }
-    const args = [
-        "exec",
-        "--output-schema", a.schemaPath,
-        ...(a.extraArgs ?? []),
-        "--",
-        a.prompt
-    ];
-
+    const args: string[] = ["exec", "--output-schema", a.schemaPath];
+    if (a.outputLastMessagePath) {
+        fs.mkdirSync(path.dirname(a.outputLastMessagePath), { recursive: true });
+        args.push("--output-last-message", a.outputLastMessagePath);
+    }
+    if (a.colorNever) args.push("--color", "never");
+    args.push(...(a.extraArgs ?? []), "--", a.prompt);
     const { stdout } = await execa(bin, args, {
         env,
         timeout: a.timeoutMs ?? 120_000,
     });
+    // 最終メッセージファイルがあればそれを優先
+    if (a.outputLastMessagePath && fs.existsSync(a.outputLastMessagePath)) {
+        return fs.readFileSync(a.outputLastMessagePath, "utf8").trim();
+    }
     return stdout.trim();
 }
 
@@ -58,6 +69,7 @@ export async function detectCodexFeatures(bin = "codex"): Promise<CodexFeatures>
     // ハイフンの数や空白に頑健な判定
     const hasOutputSchema = /--output\s*-\s*schema|--output-schema/.test(text);
     const hasJson = /\s--json(\s|$)/.test(text) || /print.*jsonl/.test(text);
+    const hasOutputLastMessage = /--output-last-message/.test(text);
 
-    return { hasOutputSchema, hasJson };
+    return { hasOutputSchema, hasJson, hasOutputLastMessage };
 }

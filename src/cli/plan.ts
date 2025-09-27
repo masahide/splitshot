@@ -83,15 +83,22 @@ export function cmdPlan() {
             const plannerHome = opts.plannerHome ?? path.resolve(".codex-home-planner");
             inheritCodexAuthFiles(plannerHome);
 
+            const tmpOut = path.join(path.resolve(".splitshot/_tmp"), `plan-last-${Date.now()}.json`);
+            if (opts.debug) console.error(`[debug] output-last-message: ${feats.hasOutputLastMessage ? "enabled" : "disabled"}`);
+            if (opts.debug && feats.hasOutputLastMessage) console.error(`[debug] last-message path: ${tmpOut}`);
             const stdout = await execCodexWithSchema({
                 bin: opts.codexBin,
                 schemaPath,
                 prompt,
                 plannerHome,
                 timeoutMs: opts.timeout,
+                outputLastMessagePath: feats.hasOutputLastMessage ? tmpOut : undefined,
+                colorNever: true,
             });
             if (opts.debug) {
                 console.error("[debug] codex stdout:\n" + stdout);
+                console.error(`[debug] output-last-message: ${feats.hasOutputLastMessage ? "enabled" : "disabled"}`);
+                if (feats.hasOutputLastMessage) console.error(`[debug] last-message path: ${tmpOut} (exists=${fs.existsSync(tmpOut)})`);
             }
 
             // 6) Parse & validate JSON (Zod)
@@ -106,7 +113,10 @@ export function cmdPlan() {
             // Save raw plan & prompt
             writeFileUtf8(path.join(planDir, "plan.json"), JSON.stringify(plan, null, 2));
             writeFileUtf8(path.join(planDir, "plan.prompt.txt"), prompt);
-
+            if (feats.hasOutputLastMessage && fs.existsSync(tmpOut)) {
+                const last = fs.readFileSync(tmpOut, "utf8");
+                writeFileUtf8(path.join(planDir, "codex.last-message.json"), last);
+            }
             // Save codex raw input/output when debug enabled (also keep even if not to help reproduction)
             try {
                 writeFileUtf8(path.join(planDir, "codex.input.txt"), prompt);
