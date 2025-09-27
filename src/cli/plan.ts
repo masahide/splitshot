@@ -19,6 +19,7 @@ export function cmdPlan() {
     const cmd = new Command("plan");
     cmd
         .description("Generate plan-dir with plan.json, manifest.json and worker checklists")
+        .option("--debug", "Enable debug: print/save Codex input and output", false)
         .option("--objective <fileOrText>", "Objective file path or raw text")
         .option("--workers <n>", "Workers hint", (v) => parseInt(v, 10), 3)
         .option("--out <dir>", "Plan base output directory (default: ./.splitshot)")
@@ -56,16 +57,13 @@ export function cmdPlan() {
             writePlanJsonSchemaFile(schemaPath);
 
             // 4) Build prompt for the planner
-            const prompt = buildPlannerPrompt({
-                objective,
-                workers: opts.workers,
-                avoidPaths: (opts.avoid?.split(",") ?? []).map((s: string) => s.trim()).filter(Boolean),
-                mustPaths: (opts.must?.split(",") ?? []).map((s: string) => s.trim()).filter(Boolean),
-                approval: opts.approval,
-                model: opts.model,
-            });
+            const prompt = buildPlannerPrompt({ objective, workers: opts.workers });
 
             // 5) Run Codex with structured outputs
+            if (opts.debug) {
+                // print prompt early for visibility
+                console.error("[debug] planner prompt:\n" + prompt);
+            }
             const stdout = await execCodexWithSchema({
                 bin: opts.codexBin,
                 schemaPath,
@@ -73,6 +71,9 @@ export function cmdPlan() {
                 plannerHome: opts.plannerHome ?? path.resolve(".codex-home-planner"),
                 timeoutMs: opts.timeout,
             });
+            if (opts.debug) {
+                console.error("[debug] codex stdout:\n" + stdout);
+            }
 
             // 6) Parse & validate JSON (Zod)
             const plan = parsePlanFromText(stdout) as Plan;
@@ -86,6 +87,15 @@ export function cmdPlan() {
             // Save raw plan & prompt
             writeFileUtf8(path.join(planDir, "plan.json"), JSON.stringify(plan, null, 2));
             writeFileUtf8(path.join(planDir, "plan.prompt.txt"), prompt);
+
+            // Save codex raw input/output when debug enabled (also keep even if not to help reproduction)
+            try {
+                writeFileUtf8(path.join(planDir, "codex.input.txt"), prompt);
+                writeFileUtf8(path.join(planDir, "codex.output.txt"), stdout);
+            } catch (e) {
+                // non-fatal
+                console.error("Failed to write codex debug files:", e instanceof Error ? e.message : String(e));
+            }
 
             // === 8) Build topo order then distribute to N worker streams (round robin) ===
             const layers = buildBatches(plan.tasks);
