@@ -11,11 +11,13 @@ const planStub = path.resolve("tests/fixtures/codex-plan-writes-files-stub.js");
 describe("README quick start snippets", () => {
     it("runs the plan snippet and produces a plan-dir", async () => {
         await withTmp(async ({ dir }) => {
+            const objectiveSrc = path.join(dir, "objective.md");
+            fs.writeFileSync(objectiveSrc, "README snippet objective", "utf8");
             const result = await execa(process.execPath, [
                 cli,
                 "plan",
-                "--objective",
-                "README.md",
+                "--objective-file",
+                objectiveSrc,
                 "--workers",
                 "2",
                 "--codex-bin",
@@ -23,7 +25,7 @@ describe("README quick start snippets", () => {
                 "--force-schema",
                 "--out",
                 path.join(dir, "plan-out"),
-            ]);
+            ], { cwd: dir });
             expect(result.exitCode).toBe(0);
             const planDir = findLatestPlanDir(path.join(dir, "plan-out"));
             expect(planDir && fs.existsSync(planDir)).toBe(true);

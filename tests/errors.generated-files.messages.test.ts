@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import path from "node:path";
+import fs from "node:fs";
 import { withTmp } from "./helpers/tmp";
 import { cmdPlan } from "../src/cli/plan.js";
 
@@ -15,9 +16,11 @@ describe("plan command error messaging", () => {
     it("reports when generatedFiles are missing", async () => {
         await withTmp(async ({ dir }) => {
             const outDir = path.join(dir, "plan-out");
+            const objectiveSrc = path.join(dir, "objective.txt");
+            fs.writeFileSync(objectiveSrc, "No files objective", "utf8");
             const args = [
-                "--objective",
-                "No files",
+                "--objective-file",
+                objectiveSrc,
                 "--workers",
                 "1",
                 "--codex-bin",
@@ -38,9 +41,11 @@ describe("plan command error messaging", () => {
     it("hints when docs index writing fails", async () => {
         await withTmp(async ({ dir }) => {
             const outDir = path.join(dir, "plan-out");
+            const objectiveSrc = path.join(dir, "objective.txt");
+            fs.writeFileSync(objectiveSrc, "Docs collision objective", "utf8");
             const args = [
-                "--objective",
-                "Docs collision",
+                "--objective-file",
+                objectiveSrc,
                 "--workers",
                 "1",
                 "--codex-bin",

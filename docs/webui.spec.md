@@ -180,7 +180,7 @@ apps/web/
 UI → POST /api/plans { objectiveText|file, workers, plannerHome }
 Server:
   1) objective を tmpfile 化
-  2) spawn: splitshot plan --objective <tmp> --workers N --force-schema --codex-bin codex [--planner-home ...]
+  2) spawn: splitshot plan --objective-file <tmp> --workers N --force-schema --codex-bin codex [--planner-home ...]
   3) stdout の { planDir } を parse → planId 抽出
   4) 201 返却
 ```

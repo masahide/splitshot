@@ -15,11 +15,13 @@ function readJson<T>(p: string): T {
 describe("manifest docs index integration", () => {
     it("includes docsIndex and worker todo paths", async () => {
         await withTmp(async ({ dir }) => {
+            const objectiveSrc = path.join(dir, "objective.md");
+            fs.writeFileSync(objectiveSrc, "Manifest objective", "utf8");
             const result = await execa(process.execPath, [
                 cli,
                 "plan",
-                "--objective",
-                "Manifest test",
+                "--objective-file",
+                objectiveSrc,
                 "--workers",
                 "2",
                 "--codex-bin",
@@ -34,9 +36,11 @@ describe("manifest docs index integration", () => {
 
             const manifest = readJson<{
                 docsIndex?: string;
+                objective: { outputFile: string };
                 workers: Array<{ id: string; checklist: string; todo?: string }>;
             }>(path.join(planDir, "manifest.json"));
             expect(manifest.docsIndex).toBe("docs/docs.index.json");
+            expect(manifest.objective.outputFile).toBe("docs/objective.md");
             const todos = manifest.workers.map((w) => w.todo);
             expect(todos).toContain("docs/worker-task/01/todo.md");
         });

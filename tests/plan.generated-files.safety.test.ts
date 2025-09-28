@@ -15,12 +15,14 @@ function readJson<T>(p: string): T {
 describe("plan command path safety", () => {
     it("ignores generatedFiles entries that escape the planDir", async () => {
         await withTmp(async ({ dir }) => {
+            const objectiveSrc = path.join(dir, "objective.txt");
+            fs.writeFileSync(objectiveSrc, "Safety check objective", "utf8");
             const env = { ...process.env, PLAN_STUB_UNSAFE_PATH: "../evil.md" };
             const result = await execa(process.execPath, [
                 cli,
                 "plan",
-                "--objective",
-                "Safety check",
+                "--objective-file",
+                objectiveSrc,
                 "--workers",
                 "2",
                 "--codex-bin",

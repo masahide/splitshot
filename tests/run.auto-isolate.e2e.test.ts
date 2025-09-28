@@ -18,11 +18,13 @@ describe("run: CODEX_HOME conflicts", () => {
     it("fails without --auto-isolate", async () => {
         await withTmp(async ({ dir }) => {
             const planOut = path.join(dir, "plan-out");
+            const objectiveSrc = path.join(dir, "objective.txt");
+            fs.writeFileSync(objectiveSrc, "auto-isolate objective", "utf8");
             await execa(process.execPath, [
                 cli,
                 "plan",
-                "--objective",
-                "auto-isolate-test",
+                "--objective-file",
+                objectiveSrc,
                 "--workers",
                 "2",
                 "--codex-bin",
@@ -50,11 +52,13 @@ describe("run: CODEX_HOME conflicts", () => {
     it("succeeds with --auto-isolate and both tasks start", async () => {
         await withTmp(async ({ dir }) => {
             const planOut = path.join(dir, "plan-out");
+            const objectiveSrc = path.join(dir, "objective.txt");
+            fs.writeFileSync(objectiveSrc, "auto-isolate objective", "utf8");
             await execa(process.execPath, [
                 cli,
                 "plan",
-                "--objective",
-                "auto-isolate-test",
+                "--objective-file",
+                objectiveSrc,
                 "--workers",
                 "2",
                 "--codex-bin",

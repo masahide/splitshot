@@ -19,11 +19,13 @@ describe("run: failure handling (2-mode)", () => {
 
         await withTmp(async ({ dir }) => {
             const planOut = path.join(dir, "plan-out");
+            const objectiveSrc = path.join(dir, "objective.txt");
+            fs.writeFileSync(objectiveSrc, "fail-propagation objective", "utf8");
             await execa(process.execPath, [
                 cli,
                 "plan",
-                "--objective",
-                "fail-propagation-check",
+                "--objective-file",
+                objectiveSrc,
                 "--workers",
                 "2",
                 "--codex-bin",

@@ -19,11 +19,13 @@ describe("run (E2E): maxParallel=1 emits events and serializes workers", () => {
     it("starts w01 then w02 when maxParallel=1", async () => {
         await withTmp(async ({ dir }) => {
             const planOut = path.join(dir, "plan-out");
+            const objectiveSrc = path.join(dir, "objective.txt");
+            fs.writeFileSync(objectiveSrc, "serial-run objective", "utf8");
             await execa(process.execPath, [
                 cli,
                 "plan",
-                "--objective",
-                "serial-run",
+                "--objective-file",
+                objectiveSrc,
                 "--workers",
                 "2",
                 "--codex-bin",

@@ -11,20 +11,18 @@ import { ensureDir, createPlanDir, writeFileUtf8, isSafeRelativeUnder } from "..
 import { writePlanJsonSchemaFile, parsePlanFromText } from "../schemas/plan.js";
 import { detectRepoInfo } from "../core/repo.js";
 
-
-async function readMaybeFile(v?: string): Promise<string | undefined> {
-    if (!v) return;
-    const p = path.resolve(String(v));
-    if (fs.existsSync(p) && fs.statSync(p).isFile()) return fs.readFileSync(p, "utf8");
-    return v;
-}
+const toPosix = (rel: string) => rel.split(path.sep).join("/");
 
 export function cmdPlan() {
     const cmd = new Command("plan");
     cmd
         .description("Generate plan-dir with plan.json, manifest.json and worker checklists")
         .option("--debug", "Enable debug: print/save Codex input and output", false)
-        .option("--objective <fileOrText>", "Objective file path or raw text")
+        .requiredOption("--objective-file <file>", "Objective definition file path (UTF-8)")
+        .option(
+            "--objective-output <relative>",
+            "Relative output path for the copied objective file (default: docs/objective.<ext>)"
+        )
         .option("--workers <n>", "Workers hint", (v) => parseInt(v, 10), 3)
         // repo context（自動検出の上書き用・任意）
         .option("--repo-root <dir>", "Repository root override (default: auto-detect)")
@@ -44,11 +42,14 @@ export function cmdPlan() {
             false
         )
         .action(async (opts) => {
-            // 1) Read objective
-            const objective = (await readMaybeFile(opts.objective)) ?? "";
-            if (!objective.trim()) {
-                throw new Error("objective is required (text or file path)");
+            // 1) Resolve objective source file
+            const objectiveSource = path.resolve(String(opts.objectiveFile));
+            if (!fs.existsSync(objectiveSource) || !fs.statSync(objectiveSource).isFile()) {
+                throw new Error(`objective file not found: ${objectiveSource}`);
             }
+            const ext = path.extname(objectiveSource) || ".txt";
+            const defaultObjectiveRel = path.join("docs", `objective${ext}`);
+            const objectiveOutputInput: string | undefined = opts.objectiveOutput;
 
             // 1.5) Detect repo info (best-effort)
             const autoRepo = await detectRepoInfo(process.cwd());
@@ -72,6 +73,17 @@ export function cmdPlan() {
             const planDir = createPlanDir(planBase);
             ensureDir(path.join(planDir, "checklists"));
 
+            const objectiveRelRaw = objectiveOutputInput ? String(objectiveOutputInput) : defaultObjectiveRel;
+            if (!isSafeRelativeUnder(planDir, objectiveRelRaw)) {
+                throw new Error(`objective output path must be relative to plan-dir: ${objectiveRelRaw}`);
+            }
+            const objectiveRel = toPosix(path.normalize(objectiveRelRaw));
+            const objectiveAbs = path.join(planDir, objectiveRel);
+            ensureDir(path.dirname(objectiveAbs));
+            fs.copyFileSync(objectiveSource, objectiveAbs);
+            const objectiveContext = `目的ファイル: ${objectiveRel}` +
+                (objectiveSource ? `\n元ファイル: ${objectiveSource}` : "");
+
             // 3) Zod → JSON Schema を一時ファイルに生成
             const schemaDir = path.resolve(".splitshot/_schemas");
             ensureDir(schemaDir);
@@ -79,7 +91,11 @@ export function cmdPlan() {
             writePlanJsonSchemaFile(schemaPath);
 
             // 4) Build prompt for the planner
-            const prompt = buildPlannerPrompt({ objective, workers: opts.workers, repo });
+            const prompt = buildPlannerPrompt({
+                objective: { planRelativePath: objectiveRel, sourcePath: objectiveSource },
+                workers: opts.workers,
+                repo,
+            });
 
             // 5) Run Codex with structured outputs
             if (opts.debug) {
@@ -102,6 +118,14 @@ export function cmdPlan() {
                 outputLastMessagePath: feats.hasOutputLastMessage ? tmpOut : undefined,
                 extraArgs: ["--cd", planDir],
                 colorNever: true,
+                debugLog: opts.debug
+                    ? ({ bin, args }) => {
+                          const parts = [bin, ...args].map((part) =>
+                              /\s/.test(part) ? JSON.stringify(part) : part
+                          );
+                          console.error(`[debug] codex spawn: ${parts.join(" ")}`);
+                      }
+                    : undefined,
             });
             if (opts.debug) {
                 console.error("[debug] codex stdout:\n" + res.rawStdout);
@@ -192,7 +216,6 @@ export function cmdPlan() {
                 : "# Worker <ID> — TODO Checklist\n\n## Context\n<OBJECTIVE>\n\n## Tasks\n<TASKS>\n\n## Notes\n- 出力は JSONL も含めて行単位でわかるように\n- 重要メトリクスは最後に箇条書きで報告\n";
 
             const workers: { id: string; checklist: string; todo?: string }[] = [];
-            const objectiveExcerpt = objective.trim().slice(0, 800);
             const pad2 = (n: number) => String(n).padStart(2, "0");
             for (let i = 0; i < streams.length; i++) {
                 const wid = `w${pad2(i + 1)}`;
@@ -206,7 +229,7 @@ export function cmdPlan() {
                     .join("\n");
                 const body = tpl
                     .replaceAll("<ID>", pad2(i + 1))
-                    .replaceAll("<OBJECTIVE>", objectiveExcerpt || "(no objective excerpt)")
+                    .replaceAll("<OBJECTIVE>", objectiveContext || "(no objective excerpt)")
                     .replaceAll("<TASKS>", tasksMd || "- [ ] (no tasks)");
                 writeFileUtf8(abs, body);
                 const workerEntry: { id: string; checklist: string; todo?: string } = { id: wid, checklist: rel };
@@ -282,8 +305,11 @@ export function cmdPlan() {
 
             // Manifest
             const manifest = {
-                version: 1 as const,
-                objective: objectiveExcerpt || "(no objective provided)",
+                version: 2 as const,
+                objective: {
+                    sourcePath: objectiveSource,
+                    outputFile: objectiveRel,
+                },
                 createdAt: new Date().toISOString(),
                 docsIndex: docsIndexRel,
                 workers,

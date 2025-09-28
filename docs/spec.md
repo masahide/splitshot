@@ -77,8 +77,9 @@ SplitShot は、Codex 互換の実行系を用いてソフトウェア開発タ�
 
 ```
 splitshot plan \
-  --objective <file|text> \
+  --objective-file <file> \
   --workers <N> \
+  [--objective-output <relative>] \
   [--codex-bin <path>] \
   [--out <dir>] \
   [--planner-home <dir>] \
@@ -87,11 +88,12 @@ splitshot plan \
 
 * **必須**
 
-  * `--objective`: 目的文（ファイルパスまたはテキスト）
-  * `--workers`: 並列数（= 生成するチェックリスト数）
+* `--objective-file`: 目的文のファイルパス（UTF-8）
+* `--workers`: 並列数（= 生成するチェックリスト数）
 
 * **主な任意**
 
+  * `--objective-output`: plan-dir 配下に複製する目的ファイルの相対パス（既定: `docs/objective.<ext>`）
   * `--codex-bin`: Codex バイナリ or JS（既定: `codex`）
   * `--out`: 出力先ディレクトリ（既定: `./.splitshot`）
   * `--planner-home`: プランナー実行用の `CODEX_HOME`（既定: `./.codex-home-planner`）
@@ -104,6 +106,7 @@ splitshot plan \
   `./.splitshot/_schemas/plan.schema.zod.json` へ出力
 * 生成した JSON Schema を **Codex** に `--output-schema` で渡して **Plan JSON** を取得（最終メッセージは `--output-last-message` を優先）
 * 受信 JSON は **Zod（PlanZ）で厳格検証**（`generatedFiles[]` 必須）
+* 目的ファイルを plan-dir 配下へコピーし（既定: `docs/objective.<ext>`）、プロンプト/チェックリストではコピー先パスを参照
 * Plan のタスクをトポロジー順に **N 本のワーカーストリームへ分配**（ラウンドロビン）
 * Codex 実行は plan-dir を `--cd` に指定し、`docs/` 配下へ成果物を書かせる
 * `generatedFiles[]` の安全性を検証し、`docs/docs.index.json` を生成
@@ -137,7 +140,8 @@ checklists/
 # Worker 01 — TODO Checklist
 
 ## Context
-<objective の要約または抜粋>
+目的ファイル: docs/objective.md
+元ファイル: /abs/path/to/objective.md
 
 ## Tasks
 - [ ] t1: Bootstrap runner
@@ -156,8 +160,11 @@ checklists/
 
 ```json
 {
-  "version": 1,
-  "objective": "<string>",
+  "version": 2,
+  "objective": {
+    "sourcePath": "/abs/path/to/objective.md",
+    "outputFile": "docs/objective.md"
+  },
   "createdAt": "2025-09-27T11:22:33Z",
   "docsIndex": "docs/docs.index.json",
   "workers": [
@@ -274,7 +281,7 @@ splitshot tail \
 
 * **2コマンド運用**
 
-  * `splitshot plan --objective <...> --workers <N>` → plan-dir 生成
+  * `splitshot plan --objective-file <...> --workers <N>` → plan-dir 生成
   * `splitshot run [--plan-dir <...>]` → 並列実行（`events.ndjson` 集約）
 * **スキーマ管理**
 

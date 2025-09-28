@@ -30,7 +30,7 @@ Non‑goals (v1): rich DAG resource management (we guarantee order inside a work
 
 ```bash
 # 1) Plan: create docs/ deliverables + N worker checklists + manifest under ./.splitshot/plan-<ts>/
-splitshot plan --objective README.md --workers 3
+splitshot plan --objective-file README.md --workers 3
 
 # 2) Run: pick the latest plan-dir automatically and execute in parallel
 splitshot run
@@ -79,8 +79,9 @@ When you run the **plan** command, SplitShot creates a dedicated **plan director
 
 ```
 splitshot plan \
-  --objective <file|text> \
+  --objective-file <file> \
   --workers <N> \
+  [--objective-output <relative>] \
   [--codex-bin <path>] \
   [--out <dir>] \
   [--planner-home <dir>]
@@ -88,11 +89,12 @@ splitshot plan \
 
 **Required**
 
-* `--objective` — plain text or a file path
+* `--objective-file` — path to the objective document (UTF-8)
 * `--workers` — how many parallel worker checklists to generate
 
 **Common options**
 
+* `--objective-output` — relative path within the plan-dir to copy the objective file (defaults to `docs/objective.<ext>`)
 * `--codex-bin` — Codex binary or JS script (`codex` by default)
 * `--out` — explicit output dir (defaults to `./.splitshot/plan-<timestamp>/`)
 
@@ -102,6 +104,7 @@ splitshot plan \
 * Fetches **Plan JSON** conforming to `src/schemas/plan.ts` / `src/templates/plan.zod.ts`
 * Runs Codex inside the freshly-created plan-dir (`--cd <planDir>`) so that `docs/` files are written on disk
 * Computes `docs/docs.index.json` with `{ path, role, workerId, exists, bytes, sha256, validPath }`
+* Copies the objective file into the plan-dir (default `docs/objective.<ext>`) and references the copied path in prompts/checklists
 * Distributes tasks (topological order) across **N** worker streams (round‑robin)
 * Emits one Markdown **checklist** per worker and a **manifest**
 
@@ -111,7 +114,8 @@ splitshot plan \
 # Worker 01 — TODO Checklist
 
 ## Context
-<summary or excerpt of objective>
+目的ファイル: docs/objective.md
+元ファイル: /abs/path/to/README.md
 
 ## Tasks
 - [ ] t1: Bootstrap runner
@@ -130,8 +134,11 @@ splitshot plan \
 
 ```json
 {
-  "version": 1,
-  "objective": "<string>",
+  "version": 2,
+  "objective": {
+    "sourcePath": "/abs/path/to/README.md",
+    "outputFile": "docs/objective.md"
+  },
   "createdAt": "2025-09-27T11:22:33Z",
   "docsIndex": "docs/docs.index.json",
   "workers": [
@@ -270,4 +277,3 @@ Key internals:
 * **Planner** prompt builder and JSON Schema validation (`src/templates/plan.schema.json`)
 * **Scheduler** groups tasks in topological layers (for distribution)
 * **Events**: small writer with `cork()/uncork()` batching; JSONL follower that periodically scans for new files and resumes from last read positions
-

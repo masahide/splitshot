@@ -15,11 +15,13 @@ function exists(p: string) {
 describe("plan phase: plan-dir outputs", () => {
     it("creates plan-dir artifacts including docs index", async () => {
         await withTmp(async ({ dir }) => {
+            const objectiveSrc = path.join(dir, "objective.txt");
+            fs.writeFileSync(objectiveSrc, "Hello SplitShot objective", "utf8");
             const result = await execa(process.execPath, [
                 cli,
                 "plan",
-                "--objective",
-                "Hello SplitShot",
+                "--objective-file",
+                objectiveSrc,
                 "--workers",
                 "2",
                 "--codex-bin",

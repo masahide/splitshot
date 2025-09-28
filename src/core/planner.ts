@@ -1,5 +1,18 @@
+export type PlannerObjective = {
+    /**
+     * 相対パス（plan-dir を起点）で表した目的ファイルのコピー先。
+     * Codex には plan-dir をワークディレクトリに実行させるため、このパスを
+     * そのまま提示すれば内容を参照できる。
+     */
+    planRelativePath: string;
+    /**
+     * 元ファイルの絶対パス（参考情報）。Codex には通知のみで、実際の参照は plan-dir 配下のコピーを使う。
+     */
+    sourcePath?: string;
+};
+
 export type PlanInput = {
-    objective: string;
+    objective: PlannerObjective;
     workers?: number;
     repo?: { root?: string; branch?: string; headSha?: string };
 };
@@ -16,8 +29,15 @@ export function buildPlannerPrompt(p: PlanInput): string {
     return [
         "You are a senior planning agent. Output STRICT JSON ONLY, complying with the provided JSON Schema. No prose.",
         "",
-        "OBJECTIVE:",
-        p.objective.trim(),
+        "OBJECTIVE FILE (relative to working directory):",
+        p.objective.planRelativePath,
+        ...(
+            p.objective.sourcePath
+                ? ["SOURCE FILE (absolute reference):", p.objective.sourcePath]
+                : []
+        ),
+        "",
+        "Before producing the plan, read the objective file to understand the request. Summaries or key notes should come from that file.",
         "",
         "CONSTRAINTS:",
         `- workers: ${workers}`,

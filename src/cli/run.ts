@@ -11,11 +11,17 @@ import { createEventsWriter } from "../core/eventsWriter.js";
 import { inheritCodexAuthFiles } from "../core/codexAuth.js";
 import { detectCodexFeatures } from "../core/codex.js";
 
+type ManifestObjective = {
+    sourcePath: string;
+    outputFile: string;
+};
+
 type Manifest = {
-    version: 1;
-    objective: string;
+    version: 2;
+    objective?: ManifestObjective;
     createdAt: string;
     workers: { id: string; checklist: string }[];
+    docsIndex?: string;
 };
 
 export function cmdRun() {

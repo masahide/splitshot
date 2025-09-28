@@ -19,6 +19,8 @@ export type ExecPlanArgs = {
     outputLastMessagePath?: string;
     /** Add --color never to reduce noisy output */
     colorNever?: boolean;
+    /** Optional hook for logging the resolved spawn command (bin + args) */
+    debugLog?: (info: { bin: string; args: string[] }) => void;
 };
 
 export type ExecText = {
@@ -43,6 +45,7 @@ export async function execCodexWithSchema(a: ExecPlanArgs): Promise<ExecText> {
     }
     if (a.colorNever) args.push("--color", "never");
     args.push(...(a.extraArgs ?? []), "--", a.prompt);
+    a.debugLog?.({ bin, args: [...args] });
     const { stdout, stderr } = await execa(bin, args, {
         env,
         timeout: a.timeoutMs ?? 120_000,

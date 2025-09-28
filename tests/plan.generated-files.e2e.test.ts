@@ -15,11 +15,13 @@ function readJson<T>(p: string): T {
 describe("plan command generated files integration", () => {
     it("writes docs files and docs index metadata", async () => {
         await withTmp(async ({ dir }) => {
+            const objectiveSrc = path.join(dir, "objective.txt");
+            fs.writeFileSync(objectiveSrc, "Ensure docs objective", "utf8");
             const result = await execa(process.execPath, [
                 cli,
                 "plan",
-                "--objective",
-                "Ensure docs",
+                "--objective-file",
+                objectiveSrc,
                 "--workers",
                 "2",
                 "--codex-bin",

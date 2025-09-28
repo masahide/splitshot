@@ -41,7 +41,7 @@ The project uses `pnpm` as its package manager. The following commands are essen
     ```
     For example:
     ```bash
-    node dist/cli/index.js plan --objective "Create a new React component" --workers 2
+    node dist/cli/index.js plan --objective-file objective.md --workers 2
     node dist/cli/index.js run
     ```
 

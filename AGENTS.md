@@ -24,7 +24,7 @@
 
 ## Commit & Pull Request Guidelines
 - Follow conventional commit prefixes (`feat:`, `fix:`, `chore:`); short descriptions may be Japanese or English, but stay action-oriented.
-- Group related changes per commit and include reproduction notes or CLI snippets in the PR body (`splitshot plan --objective ...`).
+- Group related changes per commit and include reproduction notes or CLI snippets in the PR body (`splitshot plan --objective-file ...`).
 - Reference issues where applicable and attach artifacts (e.g., checklist samples or log excerpts) when behavior changes.
 
 ## Environment & Operational Notes
