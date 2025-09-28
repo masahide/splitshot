@@ -14,7 +14,6 @@ async function runPlanCommand(args: string[]) {
 describe("plan command error messaging", () => {
     it("reports when generatedFiles are missing", async () => {
         await withTmp(async ({ dir }) => {
-            process.env.PLAN_STUB_DROP_GENERATED_FILES = "1";
             const outDir = path.join(dir, "plan-out");
             const args = [
                 "--objective",
@@ -27,14 +26,17 @@ describe("plan command error messaging", () => {
                 "--out",
                 outDir,
             ];
-            await expect(runPlanCommand(args)).rejects.toThrow(/generatedFiles/);
-            delete process.env.PLAN_STUB_DROP_GENERATED_FILES;
+            try {
+                process.env.PLAN_STUB_DROP_GENERATED_FILES = "1";
+                await expect(runPlanCommand(args)).rejects.toThrow(/generatedFiles/);
+            } finally {
+                delete process.env.PLAN_STUB_DROP_GENERATED_FILES;
+            }
         });
     });
 
     it("hints when docs index writing fails", async () => {
         await withTmp(async ({ dir }) => {
-            process.env.PLAN_STUB_COLLIDE_DOCS = "1";
             const outDir = path.join(dir, "plan-out");
             const args = [
                 "--objective",
@@ -47,8 +49,12 @@ describe("plan command error messaging", () => {
                 "--out",
                 outDir,
             ];
-            await expect(runPlanCommand(args)).rejects.toThrow(/docs\.index\.json/);
-            delete process.env.PLAN_STUB_COLLIDE_DOCS;
+            try {
+                process.env.PLAN_STUB_COLLIDE_DOCS = "1";
+                await expect(runPlanCommand(args)).rejects.toThrow(/docs\.index\.json/);
+            } finally {
+                delete process.env.PLAN_STUB_COLLIDE_DOCS;
+            }
         });
     });
 });

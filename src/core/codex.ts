@@ -21,7 +21,15 @@ export type ExecPlanArgs = {
     colorNever?: boolean;
 };
 
-export async function execCodexWithSchema(a: ExecPlanArgs): Promise<string> {
+export type ExecText = {
+    text: string;               // 最終的にプランとして解釈する文字列（last-message優先）
+    rawStdout: string;          // 子プロセスの素のstdout
+    rawStderr: string;          // 子プロセスの素のstderr
+    usedLastMessage: boolean;   // last-messageを使ったか
+    lastMessagePath?: string;
+};
+
+export async function execCodexWithSchema(a: ExecPlanArgs): Promise<ExecText> {
     const bin = a.bin ?? "codex";
     const env = { ...process.env };
     if (a.plannerHome) {
@@ -35,15 +43,19 @@ export async function execCodexWithSchema(a: ExecPlanArgs): Promise<string> {
     }
     if (a.colorNever) args.push("--color", "never");
     args.push(...(a.extraArgs ?? []), "--", a.prompt);
-    const { stdout } = await execa(bin, args, {
+    const { stdout, stderr } = await execa(bin, args, {
         env,
         timeout: a.timeoutMs ?? 120_000,
     });
+    let text = stdout.trim();
+    let usedLastMessage = false;
+
     // 最終メッセージファイルがあればそれを優先
     if (a.outputLastMessagePath && fs.existsSync(a.outputLastMessagePath)) {
-        return fs.readFileSync(a.outputLastMessagePath, "utf8").trim();
+        text = fs.readFileSync(a.outputLastMessagePath, "utf8").trim();
+        usedLastMessage = true;
     }
-    return stdout.trim();
+    return { text, rawStdout: stdout, rawStderr: stderr, usedLastMessage, lastMessagePath: a.outputLastMessagePath };
 }
 
 

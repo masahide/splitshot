@@ -132,11 +132,19 @@ async function main() {
 
     if (process.env.PLAN_STUB_COLLIDE_DOCS === "1") {
         try {
-            fs.chmodSync(docsDir, 0o400);
-        } catch (err) {
-            // ignore permission tweaks failing in sandbox
-            void err;
-        }
+            // conf.cd は --cd で渡された planDir
+            const planAbs = path.resolve(conf.cd);
+            const docsAbs = path.resolve(docsDir);
+            const underPlan = docsAbs.startsWith(planAbs + path.sep);
+            if (underPlan) {
+                fs.chmodSync(docsDir, 0o400);
+            } else {
+                // もし plan-dir 配下でなければ、何もしない（誤爆防止）
+                process.stderr.write(
+                    `[stub:guard] skip chmod: docsDir=${docsAbs} not under plan=${planAbs}\n`
+                );
+            }
+        } catch { /* ignore */ }
     }
 
     const unsafePath = process.env.PLAN_STUB_UNSAFE_PATH;

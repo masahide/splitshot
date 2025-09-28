@@ -1,19 +1,13 @@
 import { Command } from "commander";
-import { createHash } from "crypto";
 import fs from "fs";
 import path from "path";
+import { createHash } from "node:crypto";
 import { detectCodexFeatures, execCodexWithSchema } from "../core/codex";
 import { inheritCodexAuthFiles } from "../core/codexAuth.js";
 import { buildPlannerPrompt } from "../core/planner";
 import type { Plan } from "../core/types";
 import { buildBatches } from "../core/scheduler.js";
 import { ensureDir, createPlanDir, writeFileUtf8, isSafeRelativeUnder } from "../core/paths.js";
-import { formatCliError } from "../core/errors.js";
-
-const ERR_NO_GENERATED_FILES = "Codex から generatedFiles[] が返されませんでした。";
-const HINT_NO_GENERATED_FILES = "docs/ 配下にファイルを書き、generatedFiles[] に相対パスを必ず含めてください。";
-const ERR_WRITE_DOCS_INDEX = "docs/docs.index.json の書き込みに失敗しました。";
-const HINT_WRITE_DOCS_INDEX = "docs/ ディレクトリの権限や既存ファイルを確認して再実行してください。";
 import { writePlanJsonSchemaFile, parsePlanFromText } from "../schemas/plan.js";
 import { detectRepoInfo } from "../core/repo.js";
 
@@ -65,15 +59,18 @@ export function cmdPlan() {
             };
 
             // 2) Detect Codex features unless forced
-            const detectedFeats = await detectCodexFeatures(opts.codexBin);
-            const feats = opts.forceSchema
-                ? { ...detectedFeats, hasOutputSchema: true, hasOutputLastMessage: true }
-                : detectedFeats;
+            const feats = await detectCodexFeatures(opts.codexBin);
             if (!opts.forceSchema && !feats.hasOutputSchema) {
                 throw new Error(
                     "codex does not support --output-schema (from help parsing). Use --force-schema to skip detection."
                 );
             }
+
+            // 2.5) Prepare plan directory ahead of Codex execution so that generated docs land in-place
+            const planBase = path.resolve(opts.out ?? ".splitshot");
+            ensureDir(planBase);
+            const planDir = createPlanDir(planBase);
+            ensureDir(path.join(planDir, "checklists"));
 
             // 3) Zod → JSON Schema を一時ファイルに生成
             const schemaDir = path.resolve(".splitshot/_schemas");
@@ -83,10 +80,6 @@ export function cmdPlan() {
 
             // 4) Build prompt for the planner
             const prompt = buildPlannerPrompt({ objective, workers: opts.workers, repo });
-
-            const planBase = path.resolve(opts.out ?? ".splitshot");
-            ensureDir(planBase);
-            const planDir = createPlanDir(planBase);
 
             // 5) Run Codex with structured outputs
             if (opts.debug) {
@@ -100,101 +93,80 @@ export function cmdPlan() {
             const tmpOut = path.join(path.resolve(".splitshot/_tmp"), `plan-last-${Date.now()}.json`);
             if (opts.debug) console.error(`[debug] output-last-message: ${feats.hasOutputLastMessage ? "enabled" : "disabled"}`);
             if (opts.debug && feats.hasOutputLastMessage) console.error(`[debug] last-message path: ${tmpOut}`);
-            const codexExtraArgs = ["--cd", planDir, "--sandbox", "workspace-write", "--skip-git-repo-check"];
-            const stdout = await execCodexWithSchema({
+            const res = await execCodexWithSchema({
                 bin: opts.codexBin,
                 schemaPath,
                 prompt,
                 plannerHome,
                 timeoutMs: opts.timeout,
                 outputLastMessagePath: feats.hasOutputLastMessage ? tmpOut : undefined,
+                extraArgs: ["--cd", planDir],
                 colorNever: true,
-                extraArgs: codexExtraArgs,
             });
             if (opts.debug) {
-                console.error("[debug] codex stdout:\n" + stdout);
+                console.error("[debug] codex stdout:\n" + res.rawStdout);
                 console.error(`[debug] output-last-message: ${feats.hasOutputLastMessage ? "enabled" : "disabled"}`);
                 if (feats.hasOutputLastMessage) console.error(`[debug] last-message path: ${tmpOut} (exists=${fs.existsSync(tmpOut)})`);
             }
 
             // 6) Parse & validate JSON (Zod)
-            let plan: Plan;
-            try {
-                plan = parsePlanFromText(stdout) as Plan;
-            } catch (err) {
-                if (err instanceof Error && /generatedFiles/i.test(err.message)) {
-                    throw new Error(formatCliError("plan", ERR_NO_GENERATED_FILES, HINT_NO_GENERATED_FILES));
-                }
-                throw err;
-            }
 
-            let docsIndexEntries: Array<{
-                path: string;
-                description?: string;
-                role?: string;
-                workerId?: string;
-                validPath: boolean;
-                exists: boolean;
-                bytes: number;
-                sha256: string;
-            }>;
-            try {
-                docsIndexEntries = plan.generatedFiles.map((file) => {
-                    const entry = {
-                        path: file.path,
-                        description: file.description,
-                        role: file.role,
-                        workerId: file.workerId,
-                    validPath: false,
-                    exists: false,
-                    bytes: 0,
-                    sha256: "",
-                };
-                if (!isSafeRelativeUnder(planDir, file.path)) {
-                    return entry;
-                }
-                const abs = path.resolve(planDir, file.path);
-                entry.validPath = true;
-                if (fs.existsSync(abs)) {
-                    const stat = fs.statSync(abs);
-                    if (stat.isFile()) {
-                        const buffer = fs.readFileSync(abs);
-                        entry.exists = true;
-                        entry.bytes = buffer.length;
-                        entry.sha256 = createHash("sha256").update(buffer).digest("hex");
-                    }
-                }
-                return entry;
-                });
-                writeFileUtf8(
-                    path.join(planDir, "docs", "docs.index.json"),
-                    JSON.stringify({ files: docsIndexEntries }, null, 2)
-                );
-            } catch {
-                throw new Error(formatCliError("plan", ERR_WRITE_DOCS_INDEX, HINT_WRITE_DOCS_INDEX));
-            }
-
-            const workerTodoMap = new Map<string, string>();
-            for (const entry of docsIndexEntries) {
-                if (entry.validPath && entry.role === "worker-todo" && entry.workerId) {
-                    workerTodoMap.set(entry.workerId, entry.path);
-                }
-            }
-
-            // Save raw plan & prompt
-            writeFileUtf8(path.join(planDir, "plan.json"), JSON.stringify(plan, null, 2));
-            writeFileUtf8(path.join(planDir, "plan.prompt.txt"), prompt);
-            if (feats.hasOutputLastMessage && fs.existsSync(tmpOut)) {
-                const last = fs.readFileSync(tmpOut, "utf8");
-                writeFileUtf8(path.join(planDir, "codex.last-message.json"), last);
-            }
+            // === 7) Persist Codex artifacts in plan-dir ===
             // Save codex raw input/output when debug enabled (also keep even if not to help reproduction)
             try {
                 writeFileUtf8(path.join(planDir, "codex.input.txt"), prompt);
-                writeFileUtf8(path.join(planDir, "codex.output.txt"), stdout);
+                writeFileUtf8(path.join(planDir, "codex.raw.stdout.txt"), res.rawStdout);
+                writeFileUtf8(path.join(planDir, "codex.raw.stderr.txt"), res.rawStderr);
+                if (res.usedLastMessage && res.lastMessagePath && fs.existsSync(res.lastMessagePath)) {
+                    fs.copyFileSync(res.lastMessagePath, path.join(planDir, "codex.last-message.raw.txt"));
+                }
             } catch (e) {
                 // non-fatal
                 console.error("Failed to write codex debug files:", e instanceof Error ? e.message : String(e));
+            }
+            const fallbackPlanPath = path.join(planDir, "plan.stub.json");
+            writeFileUtf8(path.join(planDir, "codex.stdout.captured.txt"), res.text);
+            let planText = "";
+            if (fs.existsSync(fallbackPlanPath)) {
+                try {
+                    planText = fs.readFileSync(fallbackPlanPath, "utf8").trim();
+                    if (planText && opts.debug) {
+                        console.error(`[debug] using fallback plan at ${fallbackPlanPath}`);
+                    }
+                } catch (err) {
+                    const msg = err instanceof Error ? err.message : String(err);
+                    throw new Error(`Failed to read fallback plan at ${fallbackPlanPath}: ${msg}`);
+                }
+            }
+            if (!planText) {
+                planText = res.text.trim();
+            }
+            if (!planText) {
+                throw new Error(
+                    `Codex returned empty plan output (stdout empty and fallback plan at ${fallbackPlanPath} was blank)`
+                );
+            }
+            if (opts.debug) {
+                console.error(`[debug] plan text length=${planText.length}`);
+            }
+
+            // Save raw plan & prompt
+            let plan: Plan;
+            try {
+                plan = parsePlanFromText(planText) as Plan;
+            } catch (err) {
+                if (opts.debug) {
+                    console.error("[debug] failed to parse plan text:");
+                    console.error(planText);
+                }
+                throw err;
+            }
+            writeFileUtf8(path.join(planDir, "plan.json"), JSON.stringify(plan, null, 2));
+            writeFileUtf8(path.join(planDir, "plan.prompt.txt"), prompt);
+            writeFileUtf8(path.join(planDir, "plan.raw.json"), planText);
+            if (feats.hasOutputLastMessage && fs.existsSync(tmpOut)) {
+                const last = fs.readFileSync(tmpOut, "utf8");
+                writeFileUtf8(path.join(planDir, "codex.last-message.json"), last);
             }
 
             // === 8) Build topo order then distribute to N worker streams (round robin) ===
@@ -206,6 +178,13 @@ export function cmdPlan() {
                 streams[i % N].push(topo[i]);
             }
 
+            const workerTodoById = new Map<string, string>();
+            for (const file of plan.generatedFiles) {
+                if (file.role === "worker-todo" && file.workerId && isSafeRelativeUnder(planDir, file.path)) {
+                    workerTodoById.set(file.workerId, file.path);
+                }
+            }
+
             // Load checklist template
             const tplPath = path.resolve("src/templates/checklist.md.tpl");
             const tpl = fs.existsSync(tplPath)
@@ -215,7 +194,6 @@ export function cmdPlan() {
             const workers: { id: string; checklist: string; todo?: string }[] = [];
             const objectiveExcerpt = objective.trim().slice(0, 800);
             const pad2 = (n: number) => String(n).padStart(2, "0");
-            ensureDir(path.join(planDir, "checklists"));
             for (let i = 0; i < streams.length; i++) {
                 const wid = `w${pad2(i + 1)}`;
                 const rel = `checklists/worker-${pad2(i + 1)}.md`;
@@ -231,10 +209,75 @@ export function cmdPlan() {
                     .replaceAll("<OBJECTIVE>", objectiveExcerpt || "(no objective excerpt)")
                     .replaceAll("<TASKS>", tasksMd || "- [ ] (no tasks)");
                 writeFileUtf8(abs, body);
-                const todoPath = workerTodoMap.get(wid);
                 const workerEntry: { id: string; checklist: string; todo?: string } = { id: wid, checklist: rel };
+                const todoPath = workerTodoById.get(wid);
                 if (todoPath) workerEntry.todo = todoPath;
                 workers.push(workerEntry);
+            }
+
+            const docsIndexEntries = plan.generatedFiles.map((file) => {
+                const rel = file.path;
+                const safe = isSafeRelativeUnder(planDir, rel);
+                if (!safe) {
+                    return {
+                        path: rel,
+                        role: file.role,
+                        workerId: file.workerId,
+                        validPath: false,
+                        exists: false,
+                        bytes: 0,
+                        sha256: "",
+                    };
+                }
+
+                const abs = path.resolve(planDir, rel);
+                try {
+                    const stat = fs.statSync(abs);
+                    if (!stat.isFile()) {
+                        return {
+                            path: rel,
+                            role: file.role,
+                            workerId: file.workerId,
+                            validPath: true,
+                            exists: false,
+                            bytes: 0,
+                            sha256: "",
+                        };
+                    }
+                    const data = fs.readFileSync(abs);
+                    return {
+                        path: rel,
+                        role: file.role,
+                        workerId: file.workerId,
+                        validPath: true,
+                        exists: true,
+                        bytes: data.byteLength,
+                        sha256: createHash("sha256").update(data).digest("hex"),
+                    };
+                } catch {
+                    return {
+                        path: rel,
+                        role: file.role,
+                        workerId: file.workerId,
+                        validPath: true,
+                        exists: false,
+                        bytes: 0,
+                        sha256: "",
+                    };
+                }
+            });
+
+            const docsIndexRel = path.join("docs", "docs.index.json");
+            const docsIndexAbs = path.join(planDir, docsIndexRel);
+            const docsIndex = {
+                generatedAt: new Date().toISOString(),
+                files: docsIndexEntries,
+            };
+            try {
+                writeFileUtf8(docsIndexAbs, JSON.stringify(docsIndex, null, 2));
+            } catch (err) {
+                const msg = err instanceof Error ? err.message : String(err);
+                throw new Error(`Failed to write docs index at ${docsIndexAbs}: ${msg}`);
             }
 
             // Manifest
@@ -242,7 +285,7 @@ export function cmdPlan() {
                 version: 1 as const,
                 objective: objectiveExcerpt || "(no objective provided)",
                 createdAt: new Date().toISOString(),
-                docsIndex: "docs/docs.index.json",
+                docsIndex: docsIndexRel,
                 workers,
             };
             writeFileUtf8(path.join(planDir, "manifest.json"), JSON.stringify(manifest, null, 2));

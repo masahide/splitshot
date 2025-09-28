@@ -1,0 +1,28 @@
+{
+  "meta": {
+    "objective": "stub-objective",
+    "workers": 1
+  },
+  "tasks": [
+    {
+      "id": "t1",
+      "title": "bootstrap",
+      "summary": "initialize plan",
+      "cwd": ".",
+      "prompt": "do something"
+    }
+  ],
+  "generatedFiles": [
+    {
+      "path": "docs/worker-task/01/todo.md",
+      "description": "Worker 01 TODO from stub",
+      "role": "worker-todo",
+      "workerId": "w01"
+    },
+    {
+      "path": "docs/interface.md",
+      "description": "Integration interface stub",
+      "role": "interface"
+    }
+  ]
+}
