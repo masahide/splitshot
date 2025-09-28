@@ -15,25 +15,23 @@ function readLines(p: string) {
 }
 
 describe("run: CODEX_HOME conflicts", () => {
-    it("fails without --auto-isolate", async () => {
-        await withTmp(async ({ dir }) => {
-            const planOut = path.join(dir, "plan-out");
-            const objectiveSrc = path.join(dir, "objective.txt");
-            fs.writeFileSync(objectiveSrc, "auto-isolate objective", "utf8");
-            await execa(process.execPath, [
-                cli,
-                "plan",
-                "--objective-file",
-                objectiveSrc,
-                "--workers",
-                "2",
-                "--codex-bin",
-                codexStub,
-                "--force-schema",
-                "--out",
-                planOut,
-            ], { cwd: dir });
-            const planDir = findLatestPlanDir(planOut);
+            it("fails without --auto-isolate", async () => {
+                await withTmp(async ({ dir }) => {
+                    const planOut = path.join(dir, "plan-out");
+                    const objectivePath = path.join(dir, "objective.txt");
+                    fs.writeFileSync(objectivePath, "auto-isolate objective", "utf8");
+                    await execa(process.execPath, [
+                        cli,
+                        "plan",
+                        "--objective-file",
+                        "objective.txt",
+                        "--workers",
+                        "2",
+                        "--codex-bin",
+                        codexStub,
+                        "--out",
+                        planOut,
+                    ], { cwd: dir });            const planDir = findLatestPlanDir(planOut);
             expect(planDir && fs.existsSync(planDir)).toBe(true);
             if (!planDir) throw new Error("planDir not found");
             const runRes = await execa(process.execPath, [
@@ -52,18 +50,17 @@ describe("run: CODEX_HOME conflicts", () => {
     it("succeeds with --auto-isolate and both tasks start", async () => {
         await withTmp(async ({ dir }) => {
             const planOut = path.join(dir, "plan-out");
-            const objectiveSrc = path.join(dir, "objective.txt");
-            fs.writeFileSync(objectiveSrc, "auto-isolate objective", "utf8");
+            const objectivePath = path.join(dir, "objective.txt");
+            fs.writeFileSync(objectivePath, "auto-isolate objective", "utf8");
             await execa(process.execPath, [
                 cli,
                 "plan",
                 "--objective-file",
-                objectiveSrc,
+                "objective.txt",
                 "--workers",
                 "2",
                 "--codex-bin",
                 codexStub,
-                "--force-schema",
                 "--out",
                 planOut,
             ], { cwd: dir });

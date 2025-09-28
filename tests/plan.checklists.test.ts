@@ -15,18 +15,17 @@ function exists(p: string) {
 describe("plan phase: plan-dir outputs", () => {
     it("creates plan-dir artifacts including docs index", async () => {
         await withTmp(async ({ dir }) => {
-            const objectiveSrc = path.join(dir, "objective.txt");
-            fs.writeFileSync(objectiveSrc, "Hello SplitShot objective", "utf8");
+            const objectivePath = path.join(dir, "objective.txt");
+            fs.writeFileSync(objectivePath, "Hello SplitShot objective", "utf8");
             const result = await execa(process.execPath, [
                 cli,
                 "plan",
                 "--objective-file",
-                objectiveSrc,
+                "objective.txt",
                 "--workers",
                 "2",
                 "--codex-bin",
                 stub,
-                "--force-schema",
             ], { cwd: dir });
             expect(result.exitCode).toBe(0);
 

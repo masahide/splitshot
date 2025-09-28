@@ -9,7 +9,6 @@ import { formatCliError } from "../core/errors.js";
 import { JsonlFollower } from "../core/jsonlFollower.js";
 import { createEventsWriter } from "../core/eventsWriter.js";
 import { inheritCodexAuthFiles } from "../core/codexAuth.js";
-import { detectCodexFeatures } from "../core/codex.js";
 
 type ManifestObjective = {
     sourcePath: string;
@@ -67,8 +66,7 @@ export function cmdRun() {
             const maxParallel = opts.maxParallel > 0 ? opts.maxParallel : manifest.workers.length;
 
             // Codex の --json 対応を検出（あるときだけ付ける）
-            const feats = await detectCodexFeatures(opts.codexBin);
-            const supportsJson = feats.hasJson;
+            const supportsJson = true;
 
             // 4) CODEX_HOME 準備（衝突検知 & auto-isolate）
             const baseHome = path.join(planDir, ".homes");

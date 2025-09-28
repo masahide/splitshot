@@ -11,18 +11,17 @@ describe("splitshot plan", () => {
         const cliPath = path.resolve("dist/cli/index.js");
         const stub = path.resolve("tests/fixtures/codex-plan-writes-files-stub.js");
         await withTmp(async ({ dir }) => {
-            const objectiveSrc = path.join(dir, "objective.txt");
-            fs.writeFileSync(objectiveSrc, "Hello objective", "utf8");
+            const objectivePath = path.join(dir, "objective.txt");
+            fs.writeFileSync(objectivePath, "Hello objective", "utf8");
             const result = await execa(process.execPath, [
                 cliPath,
                 "plan",
                 "--objective-file",
-                objectiveSrc,
+                "objective.txt",
                 "--workers",
                 "2",
                 "--codex-bin",
                 stub,
-                "--force-schema",
             ], { cwd: dir });
             expect(result.exitCode).toBe(0);
 
@@ -37,8 +36,8 @@ describe("splitshot plan", () => {
 
             const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
             expect(manifest.objective).toBeDefined();
-            expect(manifest.objective.outputFile).toBe("docs/objective.txt");
-            const objectiveCopy = path.join(planDir, manifest.objective.outputFile);
+            expect(manifest.objective.outputFile).toBe("objective.txt");
+            const objectiveCopy = path.join(dir, manifest.objective.outputFile);
             expect(fs.readFileSync(objectiveCopy, "utf8")).toBe("Hello objective");
 
             const planJson = JSON.parse(fs.readFileSync(path.join(planDir, "plan.json"), "utf8"));

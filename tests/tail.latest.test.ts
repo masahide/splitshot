@@ -15,18 +15,17 @@ describe("tail: default latest under plan-dir", () => {
     it("tails latest run when only --plan-dir is given", async () => {
         await withTmp(async ({ dir }) => {
             const planOut = path.join(dir, "plan-out");
-            const objectiveSrc = path.join(dir, "objective.txt");
-            fs.writeFileSync(objectiveSrc, "tail objective", "utf8");
+            const objectivePath = path.join(dir, "objective.txt");
+            fs.writeFileSync(objectivePath, "tail objective", "utf8");
             await execa(process.execPath, [
                 cli,
                 "plan",
                 "--objective-file",
-                objectiveSrc,
+                "objective.txt",
                 "--workers",
                 "1",
                 "--codex-bin",
                 codexStub,
-                "--force-schema",
                 "--out",
                 planOut,
             ], { cwd: dir });

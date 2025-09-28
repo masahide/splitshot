@@ -1,7 +1,7 @@
 export type PlannerObjective = {
     /**
-     * 相対パス（plan-dir を起点）で表した目的ファイルのコピー先。
-     * Codex には plan-dir をワークディレクトリに実行させるため、このパスを
+     * 相対パス（カレントワーキングディレクトリを起点）で表した目的ファイルのパス。
+     * Codex はカレントワーキングディレクトリで実行されるため、このパスを
      * そのまま提示すれば内容を参照できる。
      */
     planRelativePath: string;
@@ -15,12 +15,14 @@ export type PlanInput = {
     objective: PlannerObjective;
     workers?: number;
     repo?: { root?: string; branch?: string; headSha?: string };
+    planDir?: string;
 };
 
-export const PLANNER_DELIVERABLES_HINT = [
-    "DELIVERABLES:",
-    "- docs/ 配下に実ファイルを書き出し、その相対パスを generatedFiles[] に列挙してください (role/workerId も必要に応じて設定)。",
-    "- 必須: docs/worker-task/XX/todo.md (XX=01..N) と docs/interface.md を Markdown (日本語) で作成してください。",
+export const PLANNER_DELIVERABLES_HINT = (
+    p: Pick<PlanInput, "planDir"> & { planDir: string }
+) => [    "DELIVERABLES:",
+    `- ${p.planDir}/docs/ 配下に実ファイルを書き出し、その相対パス(${p.planDir}からの)を generatedFiles[] に列挙してください。`,
+    `- 必須: ${p.planDir}/docs/worker-task/XX/todo.md (XX=01..N) と ${p.planDir}/docs/interface.md を Markdown (日本語) で作成してください。`,
     "- すべて相対パスのみを使用し、'..' を含めないこと。1ファイルあたりのサイズ目安は 50KB 程度です。",
 ].join("\n");
 
@@ -42,7 +44,7 @@ export function buildPlannerPrompt(p: PlanInput): string {
         "CONSTRAINTS:",
         `- workers: ${workers}`,
         "",
-        PLANNER_DELIVERABLES_HINT,
+        PLANNER_DELIVERABLES_HINT({ planDir: p.planDir ?? "." }),
         "",
         "REPO CONTEXT:",
         `${p.repo?.root ?? ""} / ${p.repo?.branch ?? ""} / ${p.repo?.headSha ?? ""}`,

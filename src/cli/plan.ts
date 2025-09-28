@@ -2,7 +2,7 @@ import { Command } from "commander";
 import fs from "fs";
 import path from "path";
 import { createHash } from "node:crypto";
-import { detectCodexFeatures, execCodexWithSchema } from "../core/codex";
+import { execCodexWithSchema } from "../core/codex";
 import { inheritCodexAuthFiles } from "../core/codexAuth.js";
 import { buildPlannerPrompt } from "../core/planner";
 import type { Plan } from "../core/types";
@@ -19,10 +19,6 @@ export function cmdPlan() {
         .description("Generate plan-dir with plan.json, manifest.json and worker checklists")
         .option("--debug", "Enable debug: print/save Codex input and output", false)
         .requiredOption("--objective-file <file>", "Objective definition file path (UTF-8)")
-        .option(
-            "--objective-output <relative>",
-            "Relative output path for the copied objective file (default: docs/objective.<ext>)"
-        )
         .option("--workers <n>", "Workers hint", (v) => parseInt(v, 10), 3)
         // repo context（自動検出の上書き用・任意）
         .option("--repo-root <dir>", "Repository root override (default: auto-detect)")
@@ -36,20 +32,15 @@ export function cmdPlan() {
         .option("--planner-home <dir>", "CODEX_HOME for the planner run")
         .option("--codex-bin <path>", "codex binary path", "codex")
         .option("--timeout <ms>", "execution timeout ms", (v) => parseInt(v, 10), 120000)
-        .option(
-            "--force-schema",
-            "Skip feature detection and use --output-schema directly",
-            false
-        )
+        .option("--output-schema", "Enable --output-schema", false)
+        .option("--output-last-message", "Enable --output-last-message", false)
         .action(async (opts) => {
             // 1) Resolve objective source file
-            const objectiveSource = path.resolve(String(opts.objectiveFile));
+            const objectiveFile = String(opts.objectiveFile);
+            const objectiveSource = path.resolve(objectiveFile);
             if (!fs.existsSync(objectiveSource) || !fs.statSync(objectiveSource).isFile()) {
                 throw new Error(`objective file not found: ${objectiveSource}`);
             }
-            const ext = path.extname(objectiveSource) || ".txt";
-            const defaultObjectiveRel = path.join("docs", `objective${ext}`);
-            const objectiveOutputInput: string | undefined = opts.objectiveOutput;
 
             // 1.5) Detect repo info (best-effort)
             const autoRepo = await detectRepoInfo(process.cwd());
@@ -59,28 +50,15 @@ export function cmdPlan() {
                 headSha: opts.repoHead ?? autoRepo.headSha,
             };
 
-            // 2) Detect Codex features unless forced
-            const feats = await detectCodexFeatures(opts.codexBin);
-            if (!opts.forceSchema && !feats.hasOutputSchema) {
-                throw new Error(
-                    "codex does not support --output-schema (from help parsing). Use --force-schema to skip detection."
-                );
-            }
-
             // 2.5) Prepare plan directory ahead of Codex execution so that generated docs land in-place
             const planBase = path.resolve(opts.out ?? ".splitshot");
             ensureDir(planBase);
             const planDir = createPlanDir(planBase);
             ensureDir(path.join(planDir, "checklists"));
 
-            const objectiveRelRaw = objectiveOutputInput ? String(objectiveOutputInput) : defaultObjectiveRel;
-            if (!isSafeRelativeUnder(planDir, objectiveRelRaw)) {
-                throw new Error(`objective output path must be relative to plan-dir: ${objectiveRelRaw}`);
-            }
-            const objectiveRel = toPosix(path.normalize(objectiveRelRaw));
-            const objectiveAbs = path.join(planDir, objectiveRel);
-            ensureDir(path.dirname(objectiveAbs));
-            fs.copyFileSync(objectiveSource, objectiveAbs);
+            const relativePlanDir = path.relative(process.cwd(), planDir);
+
+            const objectiveRel = toPosix(objectiveFile);
             const objectiveContext = `目的ファイル: ${objectiveRel}` +
                 (objectiveSource ? `\n元ファイル: ${objectiveSource}` : "");
 
@@ -95,6 +73,7 @@ export function cmdPlan() {
                 objective: { planRelativePath: objectiveRel, sourcePath: objectiveSource },
                 workers: opts.workers,
                 repo,
+                planDir: relativePlanDir,
             });
 
             // 5) Run Codex with structured outputs
@@ -107,16 +86,16 @@ export function cmdPlan() {
             inheritCodexAuthFiles(plannerHome);
 
             const tmpOut = path.join(path.resolve(".splitshot/_tmp"), `plan-last-${Date.now()}.json`);
-            if (opts.debug) console.error(`[debug] output-last-message: ${feats.hasOutputLastMessage ? "enabled" : "disabled"}`);
-            if (opts.debug && feats.hasOutputLastMessage) console.error(`[debug] last-message path: ${tmpOut}`);
+            if (opts.debug) console.error(`[debug] output-last-message: ${opts.outputLastMessage ? "enabled" : "disabled"}`);
+            if (opts.debug && opts.outputLastMessage) console.error(`[debug] last-message path: ${tmpOut}`);
             const res = await execCodexWithSchema({
                 bin: opts.codexBin,
                 schemaPath,
                 prompt,
                 plannerHome,
                 timeoutMs: opts.timeout,
-                outputLastMessagePath: feats.hasOutputLastMessage ? tmpOut : undefined,
-                extraArgs: ["--cd", planDir],
+                outputLastMessagePath: opts.outputLastMessage ? tmpOut : undefined,
+                extraArgs: [],
                 colorNever: true,
                 debugLog: opts.debug
                     ? ({ bin, args }) => {
@@ -129,8 +108,8 @@ export function cmdPlan() {
             });
             if (opts.debug) {
                 console.error("[debug] codex stdout:\n" + res.rawStdout);
-                console.error(`[debug] output-last-message: ${feats.hasOutputLastMessage ? "enabled" : "disabled"}`);
-                if (feats.hasOutputLastMessage) console.error(`[debug] last-message path: ${tmpOut} (exists=${fs.existsSync(tmpOut)})`);
+                console.error(`[debug] output-last-message: ${opts.outputLastMessage ? "enabled" : "disabled"}`);
+                if (opts.outputLastMessage) console.error(`[debug] last-message path: ${tmpOut} (exists=${fs.existsSync(tmpOut)})`);
             }
 
             // 6) Parse & validate JSON (Zod)
@@ -188,7 +167,7 @@ export function cmdPlan() {
             writeFileUtf8(path.join(planDir, "plan.json"), JSON.stringify(plan, null, 2));
             writeFileUtf8(path.join(planDir, "plan.prompt.txt"), prompt);
             writeFileUtf8(path.join(planDir, "plan.raw.json"), planText);
-            if (feats.hasOutputLastMessage && fs.existsSync(tmpOut)) {
+            if (opts.outputLastMessage && fs.existsSync(tmpOut)) {
                 const last = fs.readFileSync(tmpOut, "utf8");
                 writeFileUtf8(path.join(planDir, "codex.last-message.json"), last);
             }

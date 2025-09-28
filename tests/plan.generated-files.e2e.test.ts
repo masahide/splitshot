@@ -26,7 +26,6 @@ describe("plan command generated files integration", () => {
                 "2",
                 "--codex-bin",
                 stub,
-                "--force-schema",
             ], { cwd: dir });
             expect(result.exitCode).toBe(0);
 

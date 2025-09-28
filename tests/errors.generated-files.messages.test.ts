@@ -25,7 +25,6 @@ describe("plan command error messaging", () => {
                 "1",
                 "--codex-bin",
                 stub,
-                "--force-schema",
                 "--out",
                 outDir,
             ];
@@ -50,7 +49,6 @@ describe("plan command error messaging", () => {
                 "1",
                 "--codex-bin",
                 stub,
-                "--force-schema",
                 "--out",
                 outDir,
             ];
