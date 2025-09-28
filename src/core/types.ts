@@ -30,7 +30,3 @@ export type Assignment = {
     profile?: { model?: string; approval?: "suggest" | "auto" | "full-auto" };
 };
 
-export type Assignments = {
-    planId?: string;
-    assignments: Assignment[];
-};
