@@ -3,11 +3,12 @@ import { execa } from "execa";
 import fs from "node:fs";
 import path from "node:path";
 import { parseEventLine, type EventRecord, type StateEvent } from "../src/core/events";
+import { findLatestPlanDir } from "../src/core/paths.js";
 import { withTmp } from "./helpers/tmp";
 
 const cli = path.resolve("dist/cli/index.js");
 const stub = path.resolve("tests/fixtures/codex-runner-stub.js");
-const codexStub = path.resolve("tests/fixtures/codex-stub.js");
+const codexStub = path.resolve("tests/fixtures/codex-plan-writes-files-stub.js");
 
 function readLines(p: string) {
     return fs.readFileSync(p, "utf8").trim().split(/\r?\n/).filter(Boolean);
@@ -17,9 +18,23 @@ describe("run: failure handling (2-mode)", () => {
     it("exits non-zero when one worker fails; events are recorded under plan-dir/.runs", async () => {
 
         await withTmp(async ({ dir }) => {
-            const planRes = await execa(process.execPath, [cli, "plan", "--objective", "fail-propagation-check", "--workers", "2", "--codex-bin", codexStub], { cwd: dir });
-            const { planDir } = JSON.parse(planRes.stdout);
-            expect(typeof planDir).toBe("string");
+            const planOut = path.join(dir, "plan-out");
+            await execa(process.execPath, [
+                cli,
+                "plan",
+                "--objective",
+                "fail-propagation-check",
+                "--workers",
+                "2",
+                "--codex-bin",
+                codexStub,
+                "--force-schema",
+                "--out",
+                planOut,
+            ], { cwd: dir });
+            const planDir = findLatestPlanDir(planOut);
+            expect(planDir && fs.existsSync(planDir)).toBe(true);
+            if (!planDir) throw new Error("planDir not found");
             const runRes = await execa(process.execPath, [
                 cli, "run",
                 "--plan-dir", planDir,

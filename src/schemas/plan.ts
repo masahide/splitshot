@@ -22,13 +22,30 @@ export const TaskSpecSchema = z.object({
     profile: ProfileSchema.optional(),
 }).strict();
 
-export const PlanSchema = z.object({
-    meta: z.object({
-        objective: z.string().optional(),
-        workers: z.number().int().min(1).optional(),
-    }).optional(),
-    tasks: z.array(TaskSpecSchema).min(1),
+const WorkerIdPattern = /^w\d{2}$/;
+
+export const GeneratedFileSchema = z.object({
+    path: z.string(),
+    description: z.string().optional(),
+    role: z.enum(["worker-todo", "interface", "other"]).optional(),
+    workerId: z
+        .string()
+        .regex(WorkerIdPattern, "workerId must be formatted as wNN")
+        .optional(),
 }).strict();
+
+export const PlanSchema = z
+    .object({
+        meta: z
+            .object({
+                objective: z.string().optional(),
+                workers: z.number().int().min(1).optional(),
+            })
+            .optional(),
+        tasks: z.array(TaskSpecSchema).min(1),
+        generatedFiles: z.array(GeneratedFileSchema).min(1),
+    })
+    .strict();
 
 /** Zod → JSON Schema(2020-12) を生成してファイルへ書き出し */
 export function writePlanJsonSchemaFile(destPath: string) {

@@ -1,6 +1,14 @@
+export type GeneratedFile = {
+    path: string;
+    description?: string;
+    role?: "worker-todo" | "interface" | "other";
+    workerId?: string;
+};
+
 export type Plan = {
     meta?: { objective?: string; workers?: number };
     tasks: TaskSpec[];
+    generatedFiles: GeneratedFile[];
 };
 
 export type TaskSpec = {

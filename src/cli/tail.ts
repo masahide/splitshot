@@ -45,7 +45,7 @@ function matches(line: string, run: string | undefined, types: Set<string> | nul
     }
 }
 
-async function tailOnce(evFile: string, run: string | undefined, types: Set<string> | null): Promise<string[]> {
+export async function tailOnce(evFile: string, run: string | undefined, types: Set<string> | null): Promise<string[]> {
     if (!fs.existsSync(evFile)) return [];
     const text = fs.readFileSync(evFile, "utf8");
     const out: string[] = [];
@@ -56,7 +56,13 @@ async function tailOnce(evFile: string, run: string | undefined, types: Set<stri
     return out;
 }
 
-async function tailFollow(evFile: string, run: string | undefined, types: Set<string> | null, durationMs: number, intervalMs: number): Promise<string[]> {
+export async function tailFollow(
+    evFile: string,
+    run: string | undefined,
+    types: Set<string> | null,
+    durationMs: number,
+    intervalMs: number
+): Promise<string[]> {
     let pos = 0;
     const lines: string[] = [];
     const start = Date.now();

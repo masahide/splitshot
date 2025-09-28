@@ -1,4 +1,5 @@
 import { Command } from "commander";
+import { createHash } from "crypto";
 import fs from "fs";
 import path from "path";
 import { detectCodexFeatures, execCodexWithSchema } from "../core/codex";
@@ -6,7 +7,13 @@ import { inheritCodexAuthFiles } from "../core/codexAuth.js";
 import { buildPlannerPrompt } from "../core/planner";
 import type { Plan } from "../core/types";
 import { buildBatches } from "../core/scheduler.js";
-import { ensureDir, createPlanDir, writeFileUtf8 } from "../core/paths.js";
+import { ensureDir, createPlanDir, writeFileUtf8, isSafeRelativeUnder } from "../core/paths.js";
+import { formatCliError } from "../core/errors.js";
+
+const ERR_NO_GENERATED_FILES = "Codex から generatedFiles[] が返されませんでした。";
+const HINT_NO_GENERATED_FILES = "docs/ 配下にファイルを書き、generatedFiles[] に相対パスを必ず含めてください。";
+const ERR_WRITE_DOCS_INDEX = "docs/docs.index.json の書き込みに失敗しました。";
+const HINT_WRITE_DOCS_INDEX = "docs/ ディレクトリの権限や既存ファイルを確認して再実行してください。";
 import { writePlanJsonSchemaFile, parsePlanFromText } from "../schemas/plan.js";
 import { detectRepoInfo } from "../core/repo.js";
 
@@ -58,7 +65,10 @@ export function cmdPlan() {
             };
 
             // 2) Detect Codex features unless forced
-            const feats = await detectCodexFeatures(opts.codexBin);
+            const detectedFeats = await detectCodexFeatures(opts.codexBin);
+            const feats = opts.forceSchema
+                ? { ...detectedFeats, hasOutputSchema: true, hasOutputLastMessage: true }
+                : detectedFeats;
             if (!opts.forceSchema && !feats.hasOutputSchema) {
                 throw new Error(
                     "codex does not support --output-schema (from help parsing). Use --force-schema to skip detection."
@@ -74,6 +84,10 @@ export function cmdPlan() {
             // 4) Build prompt for the planner
             const prompt = buildPlannerPrompt({ objective, workers: opts.workers, repo });
 
+            const planBase = path.resolve(opts.out ?? ".splitshot");
+            ensureDir(planBase);
+            const planDir = createPlanDir(planBase);
+
             // 5) Run Codex with structured outputs
             if (opts.debug) {
                 // print prompt early for visibility
@@ -86,6 +100,7 @@ export function cmdPlan() {
             const tmpOut = path.join(path.resolve(".splitshot/_tmp"), `plan-last-${Date.now()}.json`);
             if (opts.debug) console.error(`[debug] output-last-message: ${feats.hasOutputLastMessage ? "enabled" : "disabled"}`);
             if (opts.debug && feats.hasOutputLastMessage) console.error(`[debug] last-message path: ${tmpOut}`);
+            const codexExtraArgs = ["--cd", planDir, "--sandbox", "workspace-write", "--skip-git-repo-check"];
             const stdout = await execCodexWithSchema({
                 bin: opts.codexBin,
                 schemaPath,
@@ -94,6 +109,7 @@ export function cmdPlan() {
                 timeoutMs: opts.timeout,
                 outputLastMessagePath: feats.hasOutputLastMessage ? tmpOut : undefined,
                 colorNever: true,
+                extraArgs: codexExtraArgs,
             });
             if (opts.debug) {
                 console.error("[debug] codex stdout:\n" + stdout);
@@ -102,13 +118,68 @@ export function cmdPlan() {
             }
 
             // 6) Parse & validate JSON (Zod)
-            const plan = parsePlanFromText(stdout) as Plan;
+            let plan: Plan;
+            try {
+                plan = parsePlanFromText(stdout) as Plan;
+            } catch (err) {
+                if (err instanceof Error && /generatedFiles/i.test(err.message)) {
+                    throw new Error(formatCliError("plan", ERR_NO_GENERATED_FILES, HINT_NO_GENERATED_FILES));
+                }
+                throw err;
+            }
 
-            // === 7) Create plan-dir structure ===
-            const planBase = path.resolve(opts.out ?? ".splitshot");
-            ensureDir(planBase);
-            const planDir = createPlanDir(planBase);
-            ensureDir(path.join(planDir, "checklists"));
+            let docsIndexEntries: Array<{
+                path: string;
+                description?: string;
+                role?: string;
+                workerId?: string;
+                validPath: boolean;
+                exists: boolean;
+                bytes: number;
+                sha256: string;
+            }>;
+            try {
+                docsIndexEntries = plan.generatedFiles.map((file) => {
+                    const entry = {
+                        path: file.path,
+                        description: file.description,
+                        role: file.role,
+                        workerId: file.workerId,
+                    validPath: false,
+                    exists: false,
+                    bytes: 0,
+                    sha256: "",
+                };
+                if (!isSafeRelativeUnder(planDir, file.path)) {
+                    return entry;
+                }
+                const abs = path.resolve(planDir, file.path);
+                entry.validPath = true;
+                if (fs.existsSync(abs)) {
+                    const stat = fs.statSync(abs);
+                    if (stat.isFile()) {
+                        const buffer = fs.readFileSync(abs);
+                        entry.exists = true;
+                        entry.bytes = buffer.length;
+                        entry.sha256 = createHash("sha256").update(buffer).digest("hex");
+                    }
+                }
+                return entry;
+                });
+                writeFileUtf8(
+                    path.join(planDir, "docs", "docs.index.json"),
+                    JSON.stringify({ files: docsIndexEntries }, null, 2)
+                );
+            } catch {
+                throw new Error(formatCliError("plan", ERR_WRITE_DOCS_INDEX, HINT_WRITE_DOCS_INDEX));
+            }
+
+            const workerTodoMap = new Map<string, string>();
+            for (const entry of docsIndexEntries) {
+                if (entry.validPath && entry.role === "worker-todo" && entry.workerId) {
+                    workerTodoMap.set(entry.workerId, entry.path);
+                }
+            }
 
             // Save raw plan & prompt
             writeFileUtf8(path.join(planDir, "plan.json"), JSON.stringify(plan, null, 2));
@@ -141,9 +212,10 @@ export function cmdPlan() {
                 ? fs.readFileSync(tplPath, "utf8")
                 : "# Worker <ID> — TODO Checklist\n\n## Context\n<OBJECTIVE>\n\n## Tasks\n<TASKS>\n\n## Notes\n- 出力は JSONL も含めて行単位でわかるように\n- 重要メトリクスは最後に箇条書きで報告\n";
 
-            const workers: { id: string; checklist: string }[] = [];
+            const workers: { id: string; checklist: string; todo?: string }[] = [];
             const objectiveExcerpt = objective.trim().slice(0, 800);
             const pad2 = (n: number) => String(n).padStart(2, "0");
+            ensureDir(path.join(planDir, "checklists"));
             for (let i = 0; i < streams.length; i++) {
                 const wid = `w${pad2(i + 1)}`;
                 const rel = `checklists/worker-${pad2(i + 1)}.md`;
@@ -159,7 +231,10 @@ export function cmdPlan() {
                     .replaceAll("<OBJECTIVE>", objectiveExcerpt || "(no objective excerpt)")
                     .replaceAll("<TASKS>", tasksMd || "- [ ] (no tasks)");
                 writeFileUtf8(abs, body);
-                workers.push({ id: wid, checklist: rel });
+                const todoPath = workerTodoMap.get(wid);
+                const workerEntry: { id: string; checklist: string; todo?: string } = { id: wid, checklist: rel };
+                if (todoPath) workerEntry.todo = todoPath;
+                workers.push(workerEntry);
             }
 
             // Manifest
@@ -167,6 +242,7 @@ export function cmdPlan() {
                 version: 1 as const,
                 objective: objectiveExcerpt || "(no objective provided)",
                 createdAt: new Date().toISOString(),
+                docsIndex: "docs/docs.index.json",
                 workers,
             };
             writeFileUtf8(path.join(planDir, "manifest.json"), JSON.stringify(manifest, null, 2));

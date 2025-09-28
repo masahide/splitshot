@@ -3,18 +3,32 @@ import { execa } from "execa";
 import fs from "node:fs";
 import path from "node:path";
 import { withTmp } from "./helpers/tmp";
+import { findLatestPlanDir } from "../src/core/paths.js";
 
 const cli = path.resolve("dist/cli/index.js");
 const stub = path.resolve("tests/fixtures/codex-runner-stub.js");
-const codexStub = path.resolve("tests/fixtures/codex-stub.js");
+const codexStub = path.resolve("tests/fixtures/codex-plan-writes-files-stub.js");
 
 describe("run phase: manifest-driven parallel run", () => {
     it("runs workers from manifest and emits events.ndjson", async () => {
         await withTmp(async ({ dir }) => {
-            const planRes = await execa(process.execPath, [
-                cli, "plan", "--objective", "Hello", "--workers", "2", "--codex-bin", codexStub
+            const planOut = path.join(dir, "plan-out");
+            await execa(process.execPath, [
+                cli,
+                "plan",
+                "--objective",
+                "Hello",
+                "--workers",
+                "2",
+                "--codex-bin",
+                codexStub,
+                "--force-schema",
+                "--out",
+                planOut,
             ], { cwd: dir });
-            const { planDir } = JSON.parse(planRes.stdout);
+            const planDir = findLatestPlanDir(planOut);
+            expect(planDir && fs.existsSync(planDir)).toBe(true);
+            if (!planDir) throw new Error("planDir not found");
             const { exitCode } = await execa(process.execPath, [
                 cli, "run", "--plan-dir", planDir, "--codex-bin", stub, "--max-parallel", "2"
             ], { cwd: dir });

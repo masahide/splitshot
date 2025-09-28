@@ -29,7 +29,7 @@ Non‑goals (v1): rich DAG resource management (we guarantee order inside a work
 ## Quick Start
 
 ```bash
-# 1) Plan: create N worker checklists and a manifest under ./.splitshot/plan-<ts>/
+# 1) Plan: create docs/ deliverables + N worker checklists + manifest under ./.splitshot/plan-<ts>/
 splitshot plan --objective README.md --workers 3
 
 # 2) Run: pick the latest plan-dir automatically and execute in parallel
@@ -49,9 +49,14 @@ When you run the **plan** command, SplitShot creates a dedicated **plan director
 
 ```
 .splitshot/plan-<timestamp>/
-  plan.json                 # validated plan (internal format from Codex)
-  manifest.json             # entrypoint used by `run`
+  plan.json                 # validated plan (generatedFiles[] + tasks)
+  manifest.json             # entrypoint used by `run` (includes docsIndex)
   plan.prompt.txt           # exact prompt we sent to Codex (reproducibility)
+  docs/
+    docs.index.json         # metadata for generated files (exists/bytes/sha256)
+    interface.md
+    worker-task/
+      01/todo.md
   checklists/
     worker-01.md
     worker-02.md
@@ -93,8 +98,10 @@ splitshot plan \
 
 **Behavior**
 
-* Detects Codex flags (`--output-schema`, `--json`) when possible
-* Fetches **Plan JSON** conforming to `src/templates/plan.schema.json` (draft 2020‑12)
+* Detects Codex flags (`--output-schema`, `--output-last-message`, `--json`) when possible
+* Fetches **Plan JSON** conforming to `src/schemas/plan.ts` / `src/templates/plan.zod.ts`
+* Runs Codex inside the freshly-created plan-dir (`--cd <planDir>`) so that `docs/` files are written on disk
+* Computes `docs/docs.index.json` with `{ path, role, workerId, exists, bytes, sha256, validPath }`
 * Distributes tasks (topological order) across **N** worker streams (round‑robin)
 * Emits one Markdown **checklist** per worker and a **manifest**
 
@@ -126,9 +133,18 @@ splitshot plan \
   "version": 1,
   "objective": "<string>",
   "createdAt": "2025-09-27T11:22:33Z",
+  "docsIndex": "docs/docs.index.json",
   "workers": [
-    { "id": "w01", "checklist": "checklists/worker-01.md" },
-    { "id": "w02", "checklist": "checklists/worker-02.md" }
+    {
+      "id": "w01",
+      "checklist": "checklists/worker-01.md",
+      "todo": "docs/worker-task/01/todo.md"
+    },
+    {
+      "id": "w02",
+      "checklist": "checklists/worker-02.md",
+      "todo": "docs/worker-task/02/todo.md"
+    }
   ]
 }
 ```
@@ -254,5 +270,4 @@ Key internals:
 * **Planner** prompt builder and JSON Schema validation (`src/templates/plan.schema.json`)
 * **Scheduler** groups tasks in topological layers (for distribution)
 * **Events**: small writer with `cork()/uncork()` batching; JSONL follower that periodically scans for new files and resumes from last read positions
-
 

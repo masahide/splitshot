@@ -46,8 +46,13 @@ SplitShot は、Codex 互換の実行系を用いてソフトウェア開発タ�
     plan.schema.zod.json     # Zod→JSON Schema（毎回上書き生成・キャッシュ）
   plan-<ts>/
     plan.json                # Codex から取得・Zodで検証済みの計画（内部形式）
-    manifest.json            # run が参照するエントリポイント
+    manifest.json            # run が参照するエントリポイント（docsIndex 付き）
     plan.prompt.txt          # Codex へ渡したプロンプトのコピー
+    docs/
+      docs.index.json        # 生成ファイルのメタデータ { path, role, workerId, exists, bytes, sha256, validPath }
+      interface.md
+      worker-task/
+        01/todo.md
     checklists/
       worker-01.md
       worker-02.md
@@ -94,14 +99,16 @@ splitshot plan \
 
 **処理内容（スキーマ周りが Zod ベースに更新されています）**
 
-* Codex の `--output-schema` / `--json` サポートを検出（`--force-schema` でスキップ可）
+* Codex の `--output-schema` / `--output-last-message` / `--json` サポートを検出（`--force-schema` でスキップ可）
 * **Zod 定義（`src/templates/plan.zod.ts`）** から **JSON Schema（draft 2020-12）** を生成し、
   `./.splitshot/_schemas/plan.schema.zod.json` へ出力
-* 生成した JSON Schema を **Codex** に `--output-schema` で渡して **Plan JSON** を取得
-* 受信 JSON は **Zod（PlanZ）で厳格検証**（Ajv は使用しません）
+* 生成した JSON Schema を **Codex** に `--output-schema` で渡して **Plan JSON** を取得（最終メッセージは `--output-last-message` を優先）
+* 受信 JSON は **Zod（PlanZ）で厳格検証**（`generatedFiles[]` 必須）
 * Plan のタスクをトポロジー順に **N 本のワーカーストリームへ分配**（ラウンドロビン）
+* Codex 実行は plan-dir を `--cd` に指定し、`docs/` 配下へ成果物を書かせる
+* `generatedFiles[]` の安全性を検証し、`docs/docs.index.json` を生成
 * 各ストリームごとに **チェックリスト（Markdown）** を生成
-* **マニフェスト（JSON）** を生成
+* **マニフェスト（JSON）** を生成（`docsIndex` と各ワーカーの `todo` パスを含む）
 
 **標準出力**
 
@@ -113,6 +120,11 @@ splitshot plan \
 plan.json
 manifest.json
 plan.prompt.txt
+docs/
+  docs.index.json
+  interface.md
+  worker-task/
+    01/todo.md
 checklists/
   worker-01.md
   worker-02.md
@@ -147,9 +159,18 @@ checklists/
   "version": 1,
   "objective": "<string>",
   "createdAt": "2025-09-27T11:22:33Z",
+  "docsIndex": "docs/docs.index.json",
   "workers": [
-    { "id": "w01", "checklist": "checklists/worker-01.md" },
-    { "id": "w02", "checklist": "checklists/worker-02.md" }
+    {
+      "id": "w01",
+      "checklist": "checklists/worker-01.md",
+      "todo": "docs/worker-task/01/todo.md"
+    },
+    {
+      "id": "w02",
+      "checklist": "checklists/worker-02.md",
+      "todo": "docs/worker-task/02/todo.md"
+    }
   ]
 }
 ```

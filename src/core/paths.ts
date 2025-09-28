@@ -28,3 +28,13 @@ export function findLatestPlanDir(base: string): string | null {
     if (names.length === 0) return null;
     return path.join(base, names[0].n);
 }
+
+export function isSafeRelativeUnder(base: string, rel: string): boolean {
+    if (!rel || rel.trim() === "") return false;
+    if (path.isAbsolute(rel)) return false;
+    const normalizedBase = path.resolve(base);
+    const target = path.resolve(normalizedBase, rel);
+    const relative = path.relative(normalizedBase, target);
+    if (!relative) return true;
+    return !relative.startsWith("..") && !path.isAbsolute(relative);
+}
