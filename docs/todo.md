@@ -1,197 +1,212 @@
-以下は　**2モード仕様**に沿って、現行コードからの移行を前提にした **TDD用TODOチェックリスト**です。
-各項目は **RED（テスト追加）→ GREEN（実装）→ REFACTOR（整理）** の順で進められる粒度に分けています。
-※後方互換は不要とします（旧 `assign` は廃止でOK）。
+# SplitShot「Codexがファイルを書き、CLIは“作成されたパスだけ”を受け取る」移行計画（**後方互換なし** / TDD TODO）
+
+> 目的：**plan フェーズ**で Codex に **docs/** 配下の成果物ファイル（ワーカーTODOと結合I/F仕様）を**実際に書かせ**、SplitShot は **JSON（`generatedFiles[]`）で “作成されたファイルパスの目録だけ” を受け取り**検証・索引化する。
+> 既存の `documents[]`（本文を返す方式）は **廃止**します（後方互換なし）。
 
 ---
 
-# SplitShot 2モード化：TDD TODOチェックリスト
+## 全体方針（設計ゴール）
 
-## 0. 下準備（共通ユーティリティ）
+* **出力責務の移譲**：コンテンツ生成は Codex（モデル）側。SplitShot は **パス検証・索引化**に専念。
+* **安全性**：Codex の作業ルートを **plan-dir** に固定し、`--sandbox workspace-write` で **docs/** 配下への書き込みのみを促す。相対パスのみ許可し **パストラバーサル排除**。
+* **可観測性**：作成されたファイルは **`plan-dir/docs/docs.index.json`** に **存在/サイズ/sha256** をまとめる。
+* **運用性**：ワーカー数 `N` に応じて **必ず**
 
-* [ ] **RED**: `tests/helpers/tmp.ts` を用意し、一時ディレクトリ作成/削除のヘルパを追加
-
-
-  * 期待: `mkTmpWork("splitshot-")` が空ディレクトリを返す
-* [ ] **GREEN**: 実装（`tests/helpers/tmp.ts`）
-* [ ] **REFACTOR**: 既存E2Eテストの一時ディレクトリ生成をこのヘルパに置換
-
----
-
-## 1. プランフェーズ：チェックリスト & マニフェスト生成
-
-* [x] **RED**: `tests/plan.checklists.test.ts` 新規
-
-  * `splitshot plan --objective "Hello" --workers 2` を実行
-  * 期待:
-
-    * `./.splitshot/plan-<ts>/plan.json` が存在（`plan.schema.json` に合致）
-    * `./.splitshot/plan-<ts>/plan.prompt.txt` が存在
-    * `./.splitshot/plan-<ts>/checklists/worker-01.md`, `worker-02.md` が存在
-    * `./.splitshot/plan-<ts>/manifest.json` に `version:1`, `workers.length===2`、`checklist` パスが相対で入っている
-* [x] **GREEN**: `src/cli/plan.ts` を拡張
-
-  * 出力基底：`./.splitshot/plan-<timestamp>/`
-  * 既存の Plan 生成・Ajv検証は維持
-  * 分配ロジック：タスク（トポロジー順）を `workers` 本にラウンドロビンで割当
-  * Markdown生成（各ワーカー）：見出し/Context/Tasks（チェックボックス）/Notes
-  * `manifest.json` 生成：`{version:1, objective, createdAt, workers:[{id:"w01", checklist:"checklists/worker-01.md"}, …]}`
-* [x] **REFACTOR**: Markdownテンプレートを `src/templates/checklist.md.tpl` に切り出し（将来のカスタムに備える）
+  * `docs/worker-task/XX/todo.md`（`XX = 01..N`）
+  * `docs/interface.md`（結合I/F仕様）
+    を **Codex が作成** → `generatedFiles[]` に列挙。
 
 ---
 
-## 2. 旧 assign の廃止
+## 変更点サマリ（破壊的）
 
-* [x] **RED**: `tests/assign.*.test.ts` を削除 or skip（互換不要）
-* [x] **GREEN**: `src/cli/index.ts` から `cmdAssign()` の登録削除、`src/cli/assign.ts` を削除
-* [ ] **REFACTOR**: `src/core/git.ts` も削除（参照なくなるため）
+* **Plan スキーマ**：`documents[]` を削除し、**`generatedFiles[]`（必須）** を新設。
+* **Planner プロンプト**：
 
----
-
-## 3. run：manifest 駆動で並列実行（plan-dir 基準）
-
-* [x] **RED**: `tests/run.manifest.e2e.test.ts` 新規
-
-  * 前段で作った plan-dir を使う
-  * `splitshot run --plan-dir <that>`（`--codex tests/fixtures/codex-runner-stub.js`）
-  * 期待:
-
-    * `<plan-dir>/.runs/latest.json` が存在し、`runDir` が指すディレクトリに `events.ndjson`/`run.meta.json`
-    * `events.ndjson` に各ワーカー `w01`, `w02` の `state:start` → `state:exit` が出る
-    * `run.meta.json` に `{ workers:["w01","w02"], maxParallel:2, codexHomes:{ w01:…, w02:… } }`
-* [x] **GREEN**: `src/cli/run.ts` を改修（plan-dir/manifest 駆動で N 並列実行、`.runs/<ts>` 配下へ出力）
-  * 追加済みオプション：
-    * `--no-auto-isolate`（CODEX_HOME 衝突時の自動サフィックス無効化）
-    * `--codex-home-template "<planDir>/.homes/<workerId>"`（テンプレト可変）
-  * 既定：`maxParallel = workers.length`
-
-  * オプション：`--plan-dir <dir>`（省略時は `./.splitshot/plan-*` の **最新**を自動解決）
-  * `manifest.json` を読み、`workers[]` を対象に並列実行
-
-  * 各ワーカー：
-    * `prompt` = `checklists/worker-XX.md` を読み込み、Codexへ渡す本文に整形
-    * `cwd = <plan-dir>`
-    * `env`：
-
-      * `CODEX_HOME = <plan-dir>/.homes/<workerId>`（重複時は `-iso-<uniq>` 付与；`--auto-isolate` 既定ON）
-      * `SPLITSHOT_RUN_ID = <workerId>`
-      * `SPLITSHOT_CHECKLIST_FILE = <abs>`
-  * ログ収集：既存 runner/tailer を流用し `<plan-dir>/.runs/<ts>/events.ndjson` に出力
-  * `<plan-dir>/.runs/latest.json` を更新
-* [ ] **REFACTOR**: `src/core/runner.ts` の `spawnCodex` 引数を `taskId` ベースから `worker` ベースに名称調整、`CODEX_HOME` 解決・衝突検知を関数化
+  * 「docs/** に実ファイルを書け」
+  * 「書いたファイルの相対パス一覧を `generatedFiles[]` に返せ」
+    を明示（日本語本文、Markdown、2桁ワーカー番号、`..` 禁止など）。
+* **Codex 実行**：`planDir` を **先に作成**して `codex exec --cd <planDir> --sandbox workspace-write --skip-git-repo-check` で実行。
+  `--output-last-message` が使える場合は最終 JSON をファイル経由で取得。
+* **検証/索引**：`generatedFiles[]` を **安全確認 → 存在・サイズ・sha256 を計測**し、`docs/docs.index.json` を生成。
+* **テスト/フィクスチャ**：plan 用 Codex スタブを **「ファイルを書いてから JSON を返す」** 仕様へ差し替え。
 
 ---
 
-## 4. run：`--codex-bin` の解釈（ネイティブ or .js）
+# TDD TODO チェックリスト（RED → GREEN → REFACTOR）
 
-* [ ] **RED**: `tests/run.codex-bin.script.test.ts` 新規
+## 0) 下準備
 
-  * `--codex tests/fixtures/codex-runner-stub.js` で起動
-  * 期待: Windows/Unixとも `.js` は `process.execPath` 経由で spawn され `start/exit` が出る
-* [x] **GREEN**: `src/core/runner.ts` の spawn 引数構築を修正（`.js` は `process.execPath` 経由で spawn）
-  * `"codex"` の場合はそのまま
-  * `*.js` の場合は `command = process.execPath`, `args=[<abs js>, ...extra]`
-* [ ] **REFACTOR**: 判定ロジックを `src/core/spawnArgs.ts` に切り出し
+* [ ] **RED**: 新フィクスチャ `tests/fixtures/codex-plan-writes-files-stub.js` のテストを追加
+  **期待**：このスタブを `codex exec` として呼ぶと
 
----
-
-## 5. tail：plan-dir の latest を既定参照
-
-* [x] **RED**: `tests/tail.latest.test.ts` 新規（通過済み）
-* [x] **GREEN**: `src/cli/tail.ts` 改修（`<plan-dir>/.runs/latest.json` を参照）
-  * 既定で `--plan-dir` の `.runs/latest.json` を読む
-  * 手動オプション `--events <file>` は温存（テスト支援）
-* [ ] **REFACTOR**: 参照解決をユーティリティ化 `src/core/paths.ts`（`resolveLatestPlanDir()`, `resolveLatestRun()`）
+  1. `--cd <dir>` を検出して `<dir>/docs/worker-task/01/todo.md` 等を作成
+  2. `stdout`（または `--output-last-message` 指定時はファイル）で **新スキーマ**に合致する JSON（`generatedFiles[]` 含む）を返す
+* [ ] **GREEN**: フィクスチャ実装（Node ESM / shebang / 書き込み & JSON 出力）
+* [ ] **REFACTOR**: 既存の plan 系テストが使う Codex スタブを **本フィクスチャに統一**
 
 ---
 
-## 6. 失敗時の blocked（初期版：ワーカー単位）
+## 1) スキーマ更新（`generatedFiles[]` の導入）
 
-* [ ] **RED**: `tests/run.propagation.manifest.e2e.test.ts` 新規
+* [ ] **RED**: `tests/schemas.plan.generated-files.test.ts` 新規
+  **期待**：`parsePlanFromText` が
 
-  * `SPLITSHOT_FORCE_FAIL_TASK_IDS="w01"` で `w01` を失敗させる
-  * 期待:
+  * `generatedFiles` **必須（min 1）**
+  * 各要素 `{ path: string, description?: string, role?: "worker-todo"|"interface"|"other", workerId?: "w01"|"w02"|... }`
+  * 余計なキーは **拒否**
+    を満たさない JSON を **エラー**にする
+* [ ] **GREEN**: `src/schemas/plan.ts`
 
-    * `w01` は `start`→`exit(code!=0)`
-    * 未開始ワーカー（例：`w02`）には `state:blocked` が記録され、実行されない
-    * いったん走り出したワーカーは最後まで流す（同時開始のものがあればそのまま完走）
-    * プロセス終了コードは非0
-* [ ] **GREEN**: `src/core/runner.ts`
-  * 任意ワーカーの exit 失敗を検知したら、キュー上の未開始ワーカーを `blocked` にしてスキップ
-* [ ] **RED**: `tests/run.propagation.manifest.e2e.test.ts` 新規（**blocked** の厳密検証を追加する）
-  * 期待案（初期版）:
-    * `w01` 失敗で、未開始ワーカーに `state:blocked`（`reason:"dependency_failed"`）が出る
-    * プロセス終了コードは非0
-* [ ] **GREEN**: `src/core/runner.ts`（未開始ワーカーを `blocked` にしスキップ）
-* [ ] **REFACTOR**: blocked の理由文字列を定数化し、テストで厳密一致
+  * `documents` **削除**
+  * `generatedFiles` を **必須** で追加（`min(1)`、`strict()`、`z.enum` ロール、`workerId` は `"w" + 2桁` パターンなら `refine` で厳密化しても可）
+  * `writePlanJsonSchemaFile` はそのまま（Zod→JSON Schema）
+* [ ] **REFACTOR**: `src/templates/plan.zod.ts` も **同定義**へ更新（利用箇所のコメントも同期）
 
 ---
 
-## 7. JSONL フォローの堅牢化（新規ファイル追従）
+## 2) Planner プロンプト（出力責務の移譲）
 
-* [ ] **RED**: `tests/run.jsonl.follow.test.ts` 新規（`$CODEX_HOME/sessions/**/rollout-*.jsonl` の新規出現を検証）
-* [x] **GREEN**: 追従実装（`JsonlFollower` による 200ms ポーリング／新規ファイル検出）
-* [x] **REFACTOR**: ウォッチ対象の index を Map で持ち、読み取り位置を保持済み
- 
+* [ ] **RED**: `tests/planner.prompt.contains-generated-files.test.ts` 新規
+  **期待**：`buildPlannerPrompt({ objective, workers: 3 })` に
 
----
-
-## 8. 大量ログ耐性（10万行）
-
-* [ ] **RED**: `tests/run.massive-logs.test.ts` 新規
-  * スタブが `stdout` 10万行出力
-  * 期待: `events.ndjson` の `stdout` 行数が一致し、欠落なし（実測で 100k 以上）
-* [x] **GREEN**: `eventsWriter` に軽量 `cork()/uncork()` 実装済み（200行間隔）
-* [ ] **REFACTOR**: バッファ閾値を `RUN_EVENTS_FLUSH_INTERVAL` として定数化
+  * 「**docs/** に実ファイルを書け」
+  * 「**generatedFiles[]** を返せ」
+  * 「`docs/worker-task/XX/todo.md` と `docs/interface.md` を必ず作れ」
+  * 「相対パス（`..` 禁止）、日本語、Markdown、ファイルは50KB程度まで」
+    が**含まれる**
+* [ ] **GREEN**: `src/core/planner.ts` に該当文言を追記
+* [ ] **REFACTOR**: 文面を定数化（`PLANNER_DELIVERABLES_HINT` など）してテストの変更耐性を上げる
 
 ---
 
-## 9. エラーメッセージ整備
+## 3) Codex 実行（planDir を CD に / 書き込み許可）
 
-* [ ] **RED**: `tests/errors.messages.test.ts` 新規
-  * `codex` 未検出、`manifest.json` 欠落、`checklist` 欠落、`plan-dir` 不在
-  * 期待: コマンド名・原因・対処の短文が含まれる
-* [ ] **GREEN**: `src/cli/plan.ts` / `src/cli/run.ts` / `src/cli/tail.ts` に対処ヒント付きの例外を実装
-* [ ] **REFACTOR**: 共通フォーマッタ `formatCliError(cmd, reason, hint)` を `src/core/errors.ts` に用意
+* [ ] **RED**: `tests/plan.generated-files.e2e.test.ts` 新規
+  **流れ**：
 
----
+  1. `splitshot plan --objective "..." --workers 2 --codex-bin tests/fixtures/codex-plan-writes-files-stub.js`
+  2. `planDir` が返る
+  3. `planDir/docs/worker-task/01/todo.md` と `docs/interface.md` が**存在**
+  4. `plan.json` の `generatedFiles[]` にそれらの **相対パス**が含まれ、**`docs/docs.index.json`** が生成されていて、各ファイルの `{ exists:true, bytes>0, sha256:40hex }` を持つ
+* [ ] **GREEN**: `src/cli/plan.ts`
 
-## 10. ドキュメントとメタ
-
-* [ ] **RED**: `tests/readme.snippets.test.ts` 新規（任意）
-  * README 記載の最短手順（2コマンド）が動くかをスモーク
-* [ ] **GREEN**: `README.md` / `README.en.md` を 2モード手順に更新済みのまま維持
-* [ ] **REFACTOR**: `package.json` の `bin` 名称・`engines`・`scripts` を現状に合わせ調整（`pnpm check`）
-
----
-
-# 実装対象ファイルサマリ
-
-* 追加:
-  * `tests/plan.checklists.test.ts` / `tests/run.manifest.e2e.test.ts` / `tests/tail.latest.test.ts`
-  * `tests/run.propagation.manifest.e2e.test.ts` / `tests/run.jsonl.follow.test.ts` / `tests/run.massive-logs.test.ts`
-  * `tests/helpers/tmp.ts`
-  * `src/core/events.ts`（イベント型 & 型ガード）
-  * `src/core/eventsWriter.ts`
-  * `src/core/jsonlFollower.ts`（必要なら分離）
-  * `src/templates/checklist.md.tpl`
-
-* 変更:
-  * `src/cli/plan.ts` / `src/cli/run.ts` / `src/cli/tail.ts`
-  * `src/core/runner.ts`
-  * `src/cli/index.ts`（`assign` 登録を削除）
-
-* 削除:
-  * `tests/assign*.test.ts`（または skip 済み）
-  * `src/cli/assign.ts` / `src/core/git.ts`（今後削除予定）
+  * `planDir` を **先に作成**
+  * `execCodexWithSchema` に `extraArgs: ["--cd", planDir, "--sandbox", "workspace-write", "--skip-git-repo-check"]` を渡す
+  * `--output-last-message` 検出時はファイル経由で JSON 取得（既存の検出関数を利用）
+  * `generatedFiles[]` を **安全検証**して `docs/docs.index.json` を作成（存在・サイズ・sha256）
+* [ ] **REFACTOR**: パス検証ロジックを `src/core/paths.ts` にユーティリティ化（`isSafeRelativeUnder(base, rel)`）
 
 ---
 
-# テスト観点（抜粋）
+## 4) セキュリティ（パストラバーサル/外部書き込み防止）
 
-* plan 出力の **構造**（チェックリスト/マニフェスト/プロンプト/Plan JSON）
-* run 出力の **配置**（`.runs/latest.json` と `events.ndjson` の整合）
-* **並列制御**（`maxParallel` 既定＝workers数、`--max-parallel` 指定で上書き）
-* **CODEX_HOME 競合**（自動 isolate のサフィックス付与）
-* **ログ完全性**（stdout/stderr/jsonl 各行が欠落しない）
-* **失敗時の挙動**（未開始ワーカーの `blocked`、プロセス終了コード非0）
-* tail の **デフォルト解決**（plan-dir 最新 run を自動参照）
+* [ ] **RED**: `tests/plan.generated-files.safety.test.ts` 新規
+  **期待**：Codex が（テスト用スタブで）`generatedFiles` に `../evil.md` を混ぜてきても
+
+  * `docs.index.json` では **`exists:false`** かつ **無視**される（`base` 外のパスは採用しない）
+  * もちろんリポジトリ外に**ファイルは作られない**（スタブ自体は書かない）
+* [ ] **GREEN**: `src/cli/plan.ts` の検証で `path.resolve(planDir, rel).startsWith(planDir + path.sep)` を満たさないものは **除外**
+* [ ] **REFACTOR**: 除外理由を `docs.index.json` の各要素に `validPath: boolean` として格納しても良い（診断容易化）
+
+---
+
+## 5) 既存テストのアップデート（後方互換廃止の追従）
+
+* [ ] **RED**: 既存の plan 系 E2E（`tests/plan*.test.ts` など）の Codex スタブを **新フィクスチャ**に置換
+  **期待**：`plan.json` のスキーマが新仕様（`generatedFiles[]` 必須）で検証される
+* [ ] **GREEN**: テスト修正（`withTmp` での `cwd` 隔離は現状のまま）
+* [ ] **REFACTOR**: 古い `documents[]` に関するテストやコードを**削除**
+
+---
+
+## 6) マニフェスト/メタ（任意の強化）
+
+* [ ] **RED**: `tests/manifest.includes.docsIndex.test.ts`（任意）
+  **期待**：`manifest.json` に `docsIndex: "docs/docs.index.json"` を追加し、存在する
+* [ ] **GREEN**: `src/cli/plan.ts` で `manifest` に `docsIndex` を追加
+* [ ] **REFACTOR**: WebUI が辿りやすいよう `manifest` に `workers[i].todo`（例：`docs/worker-task/01/todo.md`）を入れてもよい
+
+---
+
+## 7) エラーメッセージ整備
+
+* [ ] **RED**: `tests/errors.generated-files.messages.test.ts` 新規
+  **期待**：
+
+  * Codex 実行成功だが `generatedFiles[]` が **空/欠落** → `splitshot plan` が **明確なエラー**（「Codex が成果物を書いていません」＋ヒント）
+  * `docs/index` 書き出し失敗 → **対処ヒント**付きメッセージ
+* [ ] **GREEN**: `src/core/errors.ts` の `formatCliError` を使用して `cmdPlan` にハンドリング追加
+* [ ] **REFACTOR**: メッセージ定数化・日本語/英語の簡易切替（必要なら）
+
+---
+
+## 8) ドキュメント更新
+
+* [ ] **RED**: `tests/readme.snippets.test.ts`（任意）
+  **期待**：README の最短手順（plan→run）が新仕様で動く簡易スモーク
+* [ ] **GREEN**: `README.md` / `docs/spec.md` を更新
+
+  * 新しい Plan スキーマ（`generatedFiles[]`）
+  * Codex に書かせるファイル（`docs/worker-task/XX/todo.md`, `docs/interface.md`）
+  * `docs/docs.index.json` の構造サンプル
+* [ ] **REFACTOR**: 古い仕様の記述削除
+
+---
+
+# 実装メモ（抜粋コード方針）
+
+* **Zod（Plan）**：
+
+  ```ts
+  const GeneratedFileZ = z.object({
+    path: z.string(),
+    description: z.string().optional(),
+    role: z.enum(["worker-todo","interface","other"]).optional(),
+    workerId: z.string().regex(/^w\d{2}$/).optional(),
+  }).strict();
+
+  export const PlanSchema = z.object({
+    meta: z.object({ objective: z.string().optional(), workers: z.number().int().min(1).optional() }).optional(),
+    tasks: z.array(TaskSpecSchema).min(1),
+    generatedFiles: z.array(GeneratedFileZ).min(1), // ← 必須
+  }).strict();
+  ```
+
+* **安全なパス確認**：
+
+  ```ts
+  function safeAbs(planDir: string, rel: string): string | null {
+    const abs = path.resolve(planDir, rel);
+    return abs.startsWith(planDir + path.sep) ? abs : null;
+  }
+  ```
+
+* **docs.index.json**（例）：
+
+  ```json
+  {
+    "files": [
+      { "path": "docs/worker-task/01/todo.md", "role": "worker-todo", "workerId": "w01",
+        "exists": true, "bytes": 1234, "sha256": "ab12..."},
+      { "path": "docs/interface.md", "role": "interface",
+        "exists": true, "bytes": 4567, "sha256": "cd34..."}
+    ]
+  }
+  ```
+
+* **Codex 実行**：
+  `extraArgs: ["--cd", planDir, "--sandbox", "workspace-write", "--skip-git-repo-check"]` を常時付与。
+  `--output-last-message` 検出時はファイル優先（標準出力は汚染され得るため）。
+
+---
+
+## 完了の定義（Definition of Done）
+
+* `pnpm test` が **すべて GREEN**（新規 RED テスト含む）。
+* `splitshot plan ...` で
+
+  * `plan.json` が新スキーマ（`generatedFiles[]`）で保存
+  * `docs/worker-task/XX/todo.md` と `docs/interface.md` が実在
+  * `docs/docs.index.json` に正しいメタ（exists/bytes/sha256）が入る
+* 既存 `run/tail` の E2E は影響なく **GREEN**。
