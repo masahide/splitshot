@@ -1,7 +1,7 @@
 {
   "name": "splitshot",
   "version": "0.1.0",
-  "description": "Parallel Codex planner & runner (CLI-first).",
+  "description": "Splitshot v2 CLI for prompts, step automation, worktrees, run, integrate, cleanup, tail.",
   "type": "module",
   "bin": {
     "splitshot": "dist/cli/index.js"

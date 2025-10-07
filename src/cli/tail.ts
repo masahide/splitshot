@@ -2,6 +2,7 @@ import { Command } from "commander";
 import fs from "node:fs";
 import path from "node:path";
 import { findLatestPlanDir } from "../core/paths.js";
+import { readManifestV3 } from "../core/manifest.js";
 
 type TailOpts = {
     run?: string;               // runId or "all"
@@ -21,10 +22,24 @@ function resolveEventsFile(opts: TailOpts, cwd: string): string {
     }
     const { runDir } = JSON.parse(fs.readFileSync(latest, "utf8"));
     const ev = path.join(runDir, "events.ndjson");
-    if (!fs.existsSync(ev)) {
-        throw new Error(`events.ndjson not found at ${ev}`);
+    if (fs.existsSync(ev)) {
+        return ev;
     }
-    return ev;
+
+    const manifestPath = path.join(planDir, "manifest.v3.json");
+    if (fs.existsSync(manifestPath)) {
+        try {
+            const manifest = readManifestV3(manifestPath);
+            const manifestEvents = path.resolve(planDir, manifest.run.events);
+            if (fs.existsSync(manifestEvents)) {
+                return manifestEvents;
+            }
+        } catch (err) {
+            void err; // fall back to error below
+        }
+    }
+
+    throw new Error(`events.ndjson が見つかりませんでした。--events <file> で直接指定するか、plan-dir を確認してください (想定パス: ${ev})`);
 }
 
 function parseTypes(v?: string): Set<string> | null {
@@ -108,29 +123,29 @@ export function cmdTail() {
         .option("--run <id|all>", "Run ID to filter (default: all)", "all")
         .option("--type <csv>", "Filter types: stdout,stderr,jsonl,state")
         // テスト補助: 直接 events.ndjson を指定できるように
-        .option("--events <file>", "Path to events.ndjson (otherwise uses ./.codex-parallel/runs/latest.json)")
+        .option("--events <file>", "Path to events.ndjson (otherwise uses plan-dir/.runs/latest.json)")
         // plan-dir 指定
         .option("--plan-dir <dir>", "Plan directory (default: latest under ./.splitshot)")
         .option("--duration <ms>", "Follow duration milliseconds (if omitted, just prints current contents and exit)", (v) => parseInt(v, 10), undefined)
         .option("--interval <ms>", "Polling interval milliseconds", (v) => parseInt(v, 10), 100)
         .action(async (opts: TailOpts) => {
             const cwd = process.cwd();
-            const evFile = resolveEventsFile(opts, cwd);
-            const types = parseTypes(opts.type);
-            const run = opts.run;
-
             try {
+                const evFile = resolveEventsFile(opts, cwd);
+                const types = parseTypes(opts.type);
+                const run = opts.run;
                 let outLines: string[] = [];
                 if (typeof opts.duration === "number" && Number.isFinite(opts.duration)) {
                     outLines = await tailFollow(evFile, run, types, opts.duration!, opts.interval ?? 100);
                 } else {
                     outLines = await tailOnce(evFile, run, types);
                 }
-                if (outLines.length) process.stdout.write(outLines.join("\n") + "\n");
-                process.exit(0);
+                if (outLines.length) {
+                    console.log(outLines.join("\n"));
+                }
             } catch (e) {
                 console.error(e instanceof Error ? e.message : String(e));
-                process.exit(1);
+                process.exitCode = 1;
             }
         });
     return cmd;

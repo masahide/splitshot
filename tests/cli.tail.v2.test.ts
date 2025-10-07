@@ -6,17 +6,20 @@ import { withTmp } from "./helpers/tmp";
 import { findLatestPlanDir } from "../src/core/paths.js";
 import { tailOnce } from "../src/cli/tail.js";
 
-
 const cli = path.resolve("dist/cli/index.js");
 const fakeCodex = path.resolve("tests/fixtures/fake-codex.js");
+
+type SetupResult = {
+    planDir: string;
+    eventsFile: string;
+};
 
 function writeFile(filePath: string, content: string) {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
     fs.writeFileSync(filePath, content, "utf8");
 }
 
-async function setupPlanAndRun(dir: string): Promise<{ planDir: string; eventsFile: string }> {
-    const resolvePath = (...segments: string[]) => path.join(dir, ...segments);
+async function setupPlanAndRun(dir: string, resolvePath: (...segments: string[]) => string): Promise<SetupResult> {
     writeFile(resolvePath("docs/spec.md"), "# Spec\n");
     writeFile(resolvePath("docs/interface.md"), "# Interface\n");
     writeFile(
@@ -70,13 +73,45 @@ async function setupPlanAndRun(dir: string): Promise<{ planDir: string; eventsFi
     return { planDir, eventsFile };
 }
 
-describe("tail: default latest under plan-dir", () => {
-    it("tails latest run when only --plan-dir is given", async () => {
-        await withTmp(async ({ dir }) => {
-            const { eventsFile } = await setupPlanAndRun(dir);
-            const captured = (await tailOnce(eventsFile, "all", new Set(["stdout", "jsonl", "state"]))).join("\n");
-            expect(captured.length).toBeGreaterThan(0);
-            expect(captured).toMatch(/"type":"state"/);
+describe("splitshot tail v2", () => {
+    it("prints state events when filtering by type", async () => {
+        await withTmp(async ({ dir, path: resolvePath }) => {
+            const { eventsFile } = await setupPlanAndRun(dir, resolvePath);
+            const manualLines = (await tailOnce(eventsFile, "all", new Set(["state"])));
+            expect(manualLines.length).toBeGreaterThan(0);
+            const result = await execa(process.execPath, [
+                cli,
+                "tail",
+                "--events",
+                eventsFile,
+                "--type",
+                "state",
+                "--run",
+                "all",
+            ], { cwd: dir });
+            expect(result.exitCode).toBe(0);
+            expect(manualLines.join("\n")).toContain('"type":"state"');
+            expect(manualLines.join("\n")).toContain('"runId":"w01"');
+        });
+    });
+
+    it("filters by run id", async () => {
+        await withTmp(async ({ dir, path: resolvePath }) => {
+            const { eventsFile } = await setupPlanAndRun(dir, resolvePath);
+            const manualLines = await tailOnce(eventsFile, "w02", new Set(["state"]));
+            expect(manualLines.length).toBeGreaterThan(0);
+            const result = await execa(process.execPath, [
+                cli,
+                "tail",
+                "--events",
+                eventsFile,
+                "--type",
+                "state",
+                "--run",
+                "w02",
+            ], { cwd: dir });
+            expect(result.exitCode).toBe(0);
+            expect(manualLines.join("\n")).toContain('"runId":"w02"');
         });
     });
 });
