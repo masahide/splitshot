@@ -70,8 +70,7 @@ repo/
  │       └─ agent-c.md
  ├─ .splitshot/
  │   ├─ plan-1730.../
- │   │   ├─ plan.json                  # v2: 従来拡張 or 置換（下記）
- │   │   ├─ manifest.v3.json           # ★新：ステップ横断メタ
+ │   │   ├─ manifest.v3.json           # ★ステップ横断メタ
  │   │   ├─ checklists/
  │   │   │   ├─ worker-01.md           # Step3 生成（エージェント指示）
  │   │   │   └─ worker-02.md ...
@@ -120,8 +119,8 @@ repo/
 * **主な引数**
 
   * `--objective <file>`: 仕様のタネ（箇条書き/要件ラフ等）
-  * `--model <name>` / `--approval <mode>`: Codex プロファイル（必要なら）
-  * `--planner-home <dir>`: CODEX_HOME 指定（既定 `.codex-home-planner`）
+  * `--codex-home <dir>`: CODEX_HOME 指定（既定: 環境変数 `CODEX_HOME` → `~/.codex`）
+  * `--codex-bin <path>`: Codex 実行バイナリ（既定 `codex`。テスト時はスタブで差し替え）
 * **処理**
 
   1. `prompts/spec.md` を読み、**引数展開**（$1..$9 / $ARGUMENTS 相当）。
@@ -142,7 +141,7 @@ repo/
 
   * **TDD型**（「テスト → 実装 → リファクタ」）で並べ替え。
   * **編集範囲の制限**（例: `src/api/** のみ`）を明記。
-  * **機械検証項目**（`pnpm test`, `pnpm type-check` 等）を末尾に固定追加。
+  * **機械検証項目**（TODO 側で指定されたものをそのまま掲載。指定が無い場合はフォールバックで `pnpm test` を追加）。
   * **完了時の TODO チェック反映**（`- [ ] → - [x]`）の指示を含む。
 
 ### 4) `splitshot worktrees up` / `splitshot worktrees down`
@@ -191,32 +190,28 @@ repo/
 {
   "version": 3,
   "createdAt": "2025-10-06T12:34:56.000Z",
-  "objective": { "sourcePath": "docs/spec.objective.md", "outputFile": "docs/spec.md" },
   "docs": {
     "spec": "docs/spec.md",
     "interface": "docs/interface.md",
     "todos": ["docs/todo/agent-a.md", "docs/todo/agent-b.md", "docs/todo/agent-c.md"]
   },
   "worktrees": {
-    "base": "../worktrees",
-    "branches": [
-      { "id": "w01", "branch": "feature/agent-01", "dir": "../worktrees/agent-01" },
-      { "id": "w02", "branch": "feature/agent-02", "dir": "../worktrees/agent-02" }
-    ]
+    "base": ".splitshot/worktrees",
+    "branches": []
   },
   "prompts": {
-    "sourceHome": "~/.codex/prompts",
-    "used": ["spec.md", "split.md", "agent-ja.md"]
+    "sourceHome": ".codex/prompts",
+    "used": ["spec.md", "split.md"]
   },
   "run": {
     "maxParallel": 3,
-    "codexHomes": { "w01": ".splitshot/plan-.../.homes/w01", "w02": ".homes/w02" },
-    "events": ".runs/1730.../events.ndjson"
+    "codexHomes": { "w01": ".homes/w01", "w02": ".homes/w02", "w03": ".homes/w03" },
+    "events": ".runs/bootstrap/events.ndjson"
   }
 }
 ```
 
-> 既存の `PlanSchema` は**維持**。`manifest.v3.json` を**実行横断の真理テーブル**として追加し、run/tail/cleanup が参照します。
+> v1 の `plan.json` / `PlanSchema` は廃止済み。`manifest.v3.json` が**単一の真理テーブル**として run / tail / worktrees / cleanup から参照されます。
 
 ---
 
@@ -233,7 +228,7 @@ repo/
 * **入力**: `docs/spec.md`
 * **生成**:
 
-  * `docs/todo/agent-*.md`：**TDD チェックリスト**、**機械検証**（`pnpm test`/`type-check`）を末尾に固定。
+  * `docs/todo/agent-*.md`：**TDD チェックリスト**、**機械検証**（例: `pnpm test` や `pnpm typecheck`）を末尾に固定。
   * `docs/interface.md`：**厳密 I/F**（責務境界、I/O 型、契約、例外、CLI/HTTP/イベント仕様）。
 * **整合性**: TODO ⇄ I/F のズレがないか最後に**自己チェック**。
 
@@ -247,15 +242,20 @@ repo/
 * 追加モジュール
 
   * `src/core/codexPrompts.ts`：プロンプト設置/読込、$1.. 展開
-  * `src/core/worktrees.ts`：add/remove、外部ディレクトリ推奨
+  * `src/core/codexFiles.ts`：Codex 実行結果のファイル書き出し安全化
+  * `src/core/docsIndex.ts`：生成ドキュメントのインデックス管理
+  * `src/core/todoParser.ts`：TODO Markdown の軽量パーサ
+  * `src/core/manifest.ts`：`manifest.v3.json` の I/O
+  * `src/core/worktrees.ts`：worktree add/remove ラッパ
   * `src/core/git.ts`：commit/push のラッパ（`execa`）
   * `src/core/gh.ts`：`gh` CLI 検出と PR 作成（オプショナル）
-  * `src/core/manifest.ts`：`manifest.v3.json` の I/O
 * 既存改修
 
-  * `src/cli/run.ts`：`--create-worktrees` 等の追加、`manifest.v3.json` 参照
-  * `src/core/repo.ts`：リモート検出強化
-  * `src/core/paths.ts`：`worktreeBase` 安全判定を追加
+  * `src/cli/index.ts`：新コマンド群を登録
+  * `src/cli/run.ts`：`manifest.v3.json` ベースの並列実行へ刷新
+  * `src/cli/tail.ts`：v3 フォーマットの runs データを参照
+  * `src/cli/worktrees.ts` / `src/cli/cleanup.ts` / `src/cli/integrate.ts`：manifest v3 を前提に動作
+  * `src/core/paths.ts`：plan ディレクトリ検出・安全性チェックを提供
 
 ---
 
@@ -310,4 +310,3 @@ splitshot cleanup
 
 * Step4 では **リポジトリ外**に worktree を作るのが安全（CI/ツールの誤検知回避）。
 * TODO には**機械検証**と**チェック更新**（`- [ ] → - [x]`）の指示を**必ず含める**。
-
